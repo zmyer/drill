@@ -59,6 +59,7 @@ public abstract class DrillFuncHolder extends AbstractFuncHolder {
   protected final FunctionTemplate.FunctionScope scope;
   protected final FunctionTemplate.NullHandling nullHandling;
   protected final FunctionTemplate.FunctionCostCategory costCategory;
+  protected final boolean isNiladic;
   protected final boolean isBinaryCommutative;
   protected final boolean isDeterministic;
   protected final String[] registeredNames;
@@ -75,6 +76,7 @@ public abstract class DrillFuncHolder extends AbstractFuncHolder {
     this.scope = attributes.getScope();
     this.nullHandling = attributes.getNullHandling();
     this.costCategory = attributes.getCostCategory();
+    this.isNiladic = attributes.isNiladic();
     this.isBinaryCommutative = attributes.isBinaryCommutative();
     this.isDeterministic = attributes.isDeterministic();
     this.registeredNames = attributes.getRegisteredNames();
@@ -130,6 +132,38 @@ public abstract class DrillFuncHolder extends AbstractFuncHolder {
 
   public boolean isDeterministic() {
     return attributes.isDeterministic();
+  }
+
+  public boolean isNiladic() {
+    return attributes.isNiladic();
+  }
+
+  /**
+   * Generates string representation of function input parameters:
+   * PARAMETER_TYPE_1-PARAMETER_MODE_1,PARAMETER_TYPE_2-PARAMETER_MODE_2
+   * Example: VARCHAR-REQUIRED,VARCHAR-OPTIONAL
+   * Returns empty string if function has no input parameters.
+   *
+   * @return string representation of function input parameters
+   */
+  public String getInputParameters() {
+    StringBuilder builder = new StringBuilder();
+    builder.append("");
+    for (ValueReference ref : parameters) {
+      final MajorType type = ref.getType();
+      builder.append(",");
+      builder.append(type.getMinorType().toString());
+      builder.append("-");
+      builder.append(type.getMode().toString());
+    }
+    return builder.length() == 0 ? builder.toString() : builder.substring(1);
+  }
+
+  /**
+   * @return instance of class loader used to load function
+   */
+  public ClassLoader getClassLoader() {
+    return initializer.getClassLoader();
   }
 
   protected JVar[] declareWorkspaceVariables(ClassGenerator<?> g) {

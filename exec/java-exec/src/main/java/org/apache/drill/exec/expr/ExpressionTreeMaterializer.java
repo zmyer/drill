@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,12 +22,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.expression.BooleanOperator;
@@ -63,7 +64,6 @@ import org.apache.drill.common.expression.ValueExpressions.TimeStampExpression;
 import org.apache.drill.common.expression.fn.CastFunctions;
 import org.apache.drill.common.expression.visitors.AbstractExprVisitor;
 import org.apache.drill.common.expression.visitors.ConditionalExprOptimizer;
-import org.apache.drill.common.expression.visitors.ExprVisitor;
 import org.apache.drill.common.expression.visitors.ExpressionValidator;
 import org.apache.drill.common.types.TypeProtos;
 import org.apache.drill.common.types.TypeProtos.DataMode;
@@ -78,6 +78,7 @@ import org.apache.drill.exec.expr.fn.DrillComplexWriterFuncHolder;
 import org.apache.drill.exec.expr.fn.DrillFuncHolder;
 import org.apache.drill.exec.expr.fn.ExceptionFunction;
 import org.apache.drill.exec.expr.fn.FunctionLookupContext;
+import org.apache.drill.exec.expr.stat.TypedFieldExpr;
 import org.apache.drill.exec.record.TypedFieldId;
 import org.apache.drill.exec.record.VectorAccessible;
 import org.apache.drill.exec.resolver.FunctionResolver;
@@ -89,6 +90,7 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import org.apache.drill.exec.store.parquet.stat.ColumnStatistics;
 import org.apache.drill.exec.util.DecimalUtility;
 
 public class ExpressionTreeMaterializer {
@@ -96,7 +98,7 @@ public class ExpressionTreeMaterializer {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ExpressionTreeMaterializer.class);
 
   private ExpressionTreeMaterializer() {
-  };
+  }
 
   public static LogicalExpression materialize(LogicalExpression expr, VectorAccessible batch, ErrorCollector errorCollector, FunctionLookupContext functionLookupContext) {
     return ExpressionTreeMaterializer.materialize(expr, batch, errorCollector, functionLookupContext, false, false);
@@ -116,9 +118,57 @@ public class ExpressionTreeMaterializer {
     return materialize(expr, batch, errorCollector, functionLookupContext, allowComplexWriterExpr, false);
   }
 
-  public static LogicalExpression materialize(LogicalExpression expr, VectorAccessible batch, ErrorCollector errorCollector, FunctionLookupContext functionLookupContext,
-      boolean allowComplexWriterExpr, boolean unionTypeEnabled) {
-    LogicalExpression out =  expr.accept(new MaterializeVisitor(batch, errorCollector, allowComplexWriterExpr, unionTypeEnabled), functionLookupContext);
+  public static LogicalExpression materializeFilterExpr(LogicalExpression expr, Map<SchemaPath, ColumnStatistics> fieldTypes, ErrorCollector errorCollector, FunctionLookupContext functionLookupContext) {
+    final FilterMaterializeVisitor filterMaterializeVisitor = new FilterMaterializeVisitor(fieldTypes, errorCollector);
+    LogicalExpression out =  expr.accept(filterMaterializeVisitor, functionLookupContext);
+    return out;
+  }
+
+  /**
+   * Materializes logical expression taking into account passed parameters.
+   * Is used to materialize logical expression that contains reference to one batch.
+   *
+   * @param expr logical expression to be materialized
+   * @param batch batch instance
+   * @param errorCollector error collector
+   * @param functionLookupContext context to find drill function holder
+   * @param allowComplexWriterExpr true if complex expressions are allowed
+   * @param unionTypeEnabled true if union type is enabled
+   * @return materialized logical expression
+   */
+  public static LogicalExpression materialize(LogicalExpression expr,
+                                              VectorAccessible batch,
+                                              ErrorCollector errorCollector,
+                                              FunctionLookupContext functionLookupContext,
+                                              boolean allowComplexWriterExpr,
+                                              boolean unionTypeEnabled) {
+    Map<VectorAccessible, BatchReference> batches = Maps.newHashMap();
+    batches.put(batch, null);
+    return materialize(expr, batches, errorCollector, functionLookupContext, allowComplexWriterExpr, unionTypeEnabled);
+  }
+
+  /**
+   * Materializes logical expression taking into account passed parameters.
+   * Is used to materialize logical expression that can contain several batches with or without custom batch reference.
+   *
+   * @param expr logical expression to be materialized
+   * @param batches one or more batch instances used in expression
+   * @param errorCollector error collector
+   * @param functionLookupContext context to find drill function holder
+   * @param allowComplexWriterExpr true if complex expressions are allowed
+   * @param unionTypeEnabled true if union type is enabled
+   * @return materialized logical expression
+   */
+  public static LogicalExpression materialize(LogicalExpression expr,
+                                              Map<VectorAccessible, BatchReference> batches,
+                                              ErrorCollector errorCollector,
+                                              FunctionLookupContext functionLookupContext,
+                                              boolean allowComplexWriterExpr,
+                                              boolean unionTypeEnabled) {
+
+    LogicalExpression out = expr.accept(
+        new MaterializeVisitor(batches, errorCollector, allowComplexWriterExpr, unionTypeEnabled),
+        functionLookupContext);
 
     if (!errorCollector.hasErrors()) {
       out = out.accept(ConditionalExprOptimizer.INSTANCE, null);
@@ -214,12 +264,74 @@ public class ExpressionTreeMaterializer {
     errorCollector.addGeneralError(call.getPosition(), sb.toString());
   }
 
+  /**
+   * Visitor that wraps schema path into value vector read expression
+   * if schema path is present in one of the batches,
+   * otherwise instance of null expression.
+   */
+  private static class MaterializeVisitor extends AbstractMaterializeVisitor {
 
-  private static class MaterializeVisitor extends AbstractExprVisitor<LogicalExpression, FunctionLookupContext, RuntimeException> {
+    private final Map<VectorAccessible, BatchReference> batches;
+
+    public MaterializeVisitor(Map<VectorAccessible, BatchReference> batches,
+                              ErrorCollector errorCollector,
+                              boolean allowComplexWriter,
+                              boolean unionTypeEnabled) {
+      super(errorCollector, allowComplexWriter, unionTypeEnabled);
+      this.batches = batches;
+    }
+
+    @Override
+    public LogicalExpression visitSchemaPath(final SchemaPath path, FunctionLookupContext functionLookupContext) {
+      TypedFieldId tfId = null;
+      BatchReference batchRef = null;
+      for (Map.Entry<VectorAccessible, BatchReference> entry : batches.entrySet()) {
+        tfId = entry.getKey().getValueVectorId(path);
+        if (tfId != null) {
+          batchRef = entry.getValue();
+          break;
+        }
+      }
+
+      if (tfId == null) {
+        logger.warn("Unable to find value vector of path {}, returning null instance.", path);
+        return NullExpression.INSTANCE;
+      } else {
+        return new ValueVectorReadExpression(tfId, batchRef);
+      }
+    }
+  }
+
+  private static class FilterMaterializeVisitor extends AbstractMaterializeVisitor {
+    private final Map<SchemaPath, ColumnStatistics> stats;
+
+    public FilterMaterializeVisitor(Map<SchemaPath, ColumnStatistics> stats, ErrorCollector errorCollector) {
+      super(errorCollector, false, false);
+      this.stats = stats;
+    }
+
+    @Override
+    public LogicalExpression visitSchemaPath(SchemaPath path, FunctionLookupContext functionLookupContext) {
+      MajorType type = null;
+
+      if (stats.containsKey(path)) {
+        type = stats.get(path).getMajorType();
+      }
+
+      if (type != null) {
+        return new TypedFieldExpr(path, type);
+      } else {
+        logger.warn("Unable to find value vector of path {}, returning null-int instance.", path);
+        return new TypedFieldExpr(path, Types.OPTIONAL_INT);
+        // return NullExpression.INSTANCE;
+      }
+    }
+  }
+
+  private static abstract class AbstractMaterializeVisitor extends AbstractExprVisitor<LogicalExpression, FunctionLookupContext, RuntimeException> {
     private ExpressionValidator validator = new ExpressionValidator();
     private ErrorCollector errorCollector;
     private Deque<ErrorCollector> errorCollectors = new ArrayDeque<>();
-    private final VectorAccessible batch;
     private final boolean allowComplexWriter;
     /**
      * If this is false, the materializer will not handle or create UnionTypes
@@ -231,8 +343,7 @@ public class ExpressionTreeMaterializer {
      */
     private Set<LogicalExpression> materializedExpressions = Sets.newIdentityHashSet();
 
-    public MaterializeVisitor(VectorAccessible batch, ErrorCollector errorCollector, boolean allowComplexWriter, boolean unionTypeEnabled) {
-      this.batch = batch;
+    public AbstractMaterializeVisitor(ErrorCollector errorCollector, boolean allowComplexWriter, boolean unionTypeEnabled) {
       this.errorCollector = errorCollector;
       this.allowComplexWriter = allowComplexWriter;
       this.unionTypeEnabled = unionTypeEnabled;
@@ -242,6 +353,8 @@ public class ExpressionTreeMaterializer {
       newExpr.accept(validator, errorCollector);
       return newExpr;
     }
+
+    abstract public LogicalExpression visitSchemaPath(SchemaPath path, FunctionLookupContext functionLookupContext);
 
     @Override
     public LogicalExpression visitUnknown(LogicalExpression e, FunctionLookupContext functionLookupContext)
@@ -631,19 +744,6 @@ public class ExpressionTreeMaterializer {
         return new TypedNullConstant(type);
       } else {
         return expr;
-      }
-    }
-
-    @Override
-    public LogicalExpression visitSchemaPath(SchemaPath path, FunctionLookupContext functionLookupContext) {
-//      logger.debug("Visiting schema path {}", path);
-      TypedFieldId tfId = batch.getValueVectorId(path);
-      if (tfId == null) {
-        logger.warn("Unable to find value vector of path {}, returning null instance.", path);
-        return NullExpression.INSTANCE;
-      } else {
-        ValueVectorReadExpression e = new ValueVectorReadExpression(tfId);
-        return e;
       }
     }
 

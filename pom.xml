@@ -20,7 +20,7 @@
 
   <groupId>org.apache.drill</groupId>
   <artifactId>drill-root</artifactId>
-  <version>1.9.0-SNAPSHOT</version>
+  <version>1.11.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>Apache Drill Root POM</name>
@@ -35,10 +35,13 @@
     <dep.guava.version>18.0</dep.guava.version>
     <forkCount>2</forkCount>
     <parquet.version>1.8.1-drill-r0</parquet.version>
+    <calcite.version>1.4.0-drill-r21</calcite.version>
+    <janino.version>2.7.6</janino.version>
     <sqlline.version>1.1.9-drill-r7</sqlline.version>
     <jackson.version>2.7.1</jackson.version>
-    <mapr.release.version>5.2.0-mapr</mapr.release.version>
+    <mapr.release.version>5.2.1-mapr</mapr.release.version>
     <ojai.version>1.1</ojai.version>
+    <kerby.version>1.0.0-RC2</kerby.version>
 
     <!--
       Currently Hive storage plugin only supports Apache Hive 1.2 or vendor specific variants of the
@@ -175,6 +178,7 @@
       <plugin>
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
+        <version>0.12</version>
         <executions>
           <execution>
             <id>rat-checks</id>
@@ -209,6 +213,7 @@
             <exclude>**/*.fmpp</exclude>
             <exclude>**/target/**</exclude>
             <exclude>**/*.iml</exclude>
+            <exclude>**/.idea/**</exclude>
             <exclude>**/*.tdd</exclude>
             <exclude>**/*.project</exclude>
             <exclude>**/TAGS</exclude>
@@ -221,7 +226,9 @@
             <exclude>**/*.pb.h</exclude>
             <exclude>**/*.linux</exclude>
             <exclude>**/client/build/**</exclude>
+            <exclude>**/cmake_install.cmake</exclude>
             <exclude>**/*.tbl</exclude>
+            <exclude>**/*.httpd</exclude>
             <!-- TODO DRILL-4336: try to avoid the need to add this -->
             <exclude>dependency-reduced-pom.xml</exclude>
           </excludes>
@@ -381,7 +388,7 @@
 
         <configuration>
           <dateFormat>dd.MM.yyyy '@' HH:mm:ss z</dateFormat>
-          <verbose>true</verbose>
+          <verbose>false</verbose>
           <skipPoms>false</skipPoms>
           <generateGitPropertiesFile>true</generateGitPropertiesFile>
           <failOnNoGitDirectory>false</failOnNoGitDirectory>
@@ -573,6 +580,12 @@
       <version>${dep.slf4j.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.4</version>
+    </dependency>
+
     <!-- Test Dependencies -->
     <dependency>
       <!-- JMockit needs to be on class path before JUnit. -->
@@ -605,6 +618,39 @@
       <artifactId>de.huxhorn.lilith.logback.appender.multiplex-classic</artifactId>
       <version>0.9.44</version>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+      <version>1.1.2.6</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kerby</groupId>
+      <artifactId>kerb-client</artifactId>
+      <scope>test</scope>
+      <version>${kerby.version}</version>
+      <exclusions>
+        <exclusion>
+          <artifactId>log4j</artifactId>
+          <groupId>log4j</groupId>
+        </exclusion>
+        <exclusion>
+          <artifactId>slf4j-log4j12</artifactId>
+          <groupId>org.slf4j</groupId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kerby</groupId>
+      <artifactId>kerb-core</artifactId>
+      <scope>test</scope>
+      <version>${kerby.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kerby</groupId>
+      <artifactId>kerb-simplekdc</artifactId>
+      <scope>test</scope>
+      <version>${kerby.version}</version>
     </dependency>
 
   </dependencies>
@@ -800,6 +846,11 @@
             <groupId>org.slf4j</groupId>
           </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.codehaus.janino</groupId>
+        <artifactId>janino</artifactId>
+        <version>${janino.version}</version>
       </dependency>
       <dependency>
         <groupId>com.mapr.db</groupId>
@@ -1328,6 +1379,17 @@
             </exclusions>
           </dependency>
           <dependency>
+          	<groupId>org.apache.parquet</groupId>
+          	<artifactId>parquet-hadoop</artifactId>
+          	<version>${parquet.version}</version>
+          	<exclusions>
+          		<exclusion>
+          			<groupId>org.xerial.snappy</groupId>
+          			<artifactId>snappy-java</artifactId>
+          		</exclusion>
+          	</exclusions>
+          </dependency>
+          <dependency>
             <groupId>org.apache.hbase</groupId>
             <artifactId>hbase-server</artifactId>
             <version>${hbase.version}</version>
@@ -1446,7 +1508,7 @@
           <dependency>
             <groupId>org.apache.calcite</groupId>
             <artifactId>calcite-core</artifactId>
-            <version>1.4.0-drill-r18</version>
+            <version>${calcite.version}</version>
             <exclusions>
               <exclusion>
                 <groupId>org.jgrapht</groupId>
@@ -1768,6 +1830,17 @@
             <groupId>sqlline</groupId>
             <artifactId>sqlline</artifactId>
             <version>${sqlline.version}</version>
+          </dependency>
+          <dependency>
+          	<groupId>org.apache.parquet</groupId>
+          	<artifactId>parquet-hadoop</artifactId>
+          	<version>${parquet.version}</version>
+          	<exclusions>
+          		<exclusion>
+          			<groupId>org.xerial.snappy</groupId>
+          			<artifactId>snappy-java</artifactId>
+          		</exclusion>
+          	</exclusions>
           </dependency>
           <!-- Test Dependencies -->
           <dependency>

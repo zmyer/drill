@@ -18,6 +18,7 @@
 package org.apache.drill.exec.store.mapr.db.json;
 
 import static org.ojai.DocumentConstants.ID_KEY;
+import static org.ojai.DocumentConstants.ID_FIELD;
 
 import java.nio.ByteBuffer;
 import java.util.Collection;
@@ -93,6 +94,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
   private boolean disablePushdown;
   private final boolean allTextMode;
   private final boolean ignoreSchemaChange;
+  private final boolean disableCountOptimization;
 
   public MaprDBJsonRecordReader(MapRDBSubScanSpec subScanSpec,
       MapRDBFormatPluginConfig formatPluginConfig,
@@ -110,6 +112,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
       condition = com.mapr.db.impl.ConditionImpl.parseFrom(ByteBufs.wrap(serializedFilter));
     }
 
+    disableCountOptimization = formatPluginConfig.shouldDisableCountOptimization();
     setColumns(projectedColumns);
     unionEnabled = context.getOptions().getOption(ExecConstants.ENABLE_UNION_TYPE);
     readNumbersAsDouble = formatPluginConfig.isReadAllNumbersAsDouble();
@@ -121,36 +124,47 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
   @Override
   protected Collection<SchemaPath> transformColumns(Collection<SchemaPath> columns) {
     Set<SchemaPath> transformed = Sets.newLinkedHashSet();
-    if (!isStarQuery() && !disablePushdown) {
-      Set<FieldPath> projectedFieldsSet = Sets.newTreeSet();
-      for (SchemaPath column : columns) {
-        if (column.getRootSegment().getPath().equalsIgnoreCase(ID_KEY)) {
-          /*
-           * we do not include _id field in the set of projected fields
-           * because the DB currently can not return a document if only
-           * the _id field was projected. This should really be fixed in
-           * the DB client (Bug 21708) to avoid transferring the entire
-           * document when only _id is requested.
-           */
-          // projectedFieldsList.add(ID_FIELD);
-          includeId = true;
-        } else {
-          projectedFieldsSet.add(getFieldPathForProjection(column));
-        }
-        transformed.add(column);
-      }
-      if (projectedFieldsSet.size() > 0) {
-        projectedFields = projectedFieldsSet.toArray(new FieldPath[projectedFieldsSet.size()]);
-      }
-    } else {
+    if (disablePushdown) {
       transformed.add(AbstractRecordReader.STAR_COLUMN);
       includeId = true;
+      return transformed;
     }
 
-    /*
-     * (Bug 21708) if we are projecting only the id field, save that condition here.
-     */
-    idOnly = !isStarQuery() && (projectedFields == null);
+    if (isStarQuery()) {
+      transformed.add(AbstractRecordReader.STAR_COLUMN);
+      includeId = true;
+      if (isSkipQuery()) {
+    	// `SELECT COUNT(*)` query
+    	if (!disableCountOptimization) {
+          projectedFields = new FieldPath[1];
+          projectedFields[0] = ID_FIELD;
+        }
+      }
+      return transformed;
+    }
+
+    Set<FieldPath> projectedFieldsSet = Sets.newTreeSet();
+    for (SchemaPath column : columns) {
+      if (column.getRootSegment().getPath().equalsIgnoreCase(ID_KEY)) {
+        includeId = true;
+        if (!disableCountOptimization) {
+          projectedFieldsSet.add(ID_FIELD);
+        }
+      } else {
+        projectedFieldsSet.add(getFieldPathForProjection(column));
+      }
+
+      transformed.add(column);
+    }
+
+    if (projectedFieldsSet.size() > 0) {
+      projectedFields = projectedFieldsSet.toArray(new FieldPath[projectedFieldsSet.size()]);
+    }
+
+    if (disableCountOptimization) {
+      idOnly = (projectedFields == null);
+    }
+
     return transformed;
   }
 
@@ -322,7 +336,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeTime(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, reader.getTime().toTimeStr(), fieldName);
+      writeString(writer, fieldName, reader.getTime().toTimeStr());
     } else {
       ((writer.map != null) ? writer.map.time(fieldName) : writer.list.time()).writeTime(reader.getTimeInt());
     }
@@ -330,7 +344,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeDate(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, reader.getDate().toDateStr(), fieldName);
+      writeString(writer, fieldName, reader.getDate().toDateStr());
     } else {
       long milliSecondsSinceEpoch = reader.getDateInt() * MILLISECONDS_IN_A_DAY;
       ((writer.map != null) ? writer.map.date(fieldName) : writer.list.date()).writeDate(milliSecondsSinceEpoch);
@@ -339,7 +353,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeDouble(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getDouble()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getDouble()));
     } else {
       writer.float8(fieldName).writeFloat8(reader.getDouble());
     }
@@ -347,7 +361,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeFloat(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getFloat()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getFloat()));
     } else if (readNumbersAsDouble) {
       writer.float8(fieldName).writeFloat8(reader.getFloat());
     } else {
@@ -357,7 +371,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeLong(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getLong()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getLong()));
     } else if (readNumbersAsDouble) {
       writer.float8(fieldName).writeFloat8(reader.getLong());
     } else {
@@ -367,7 +381,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeInt(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getInt()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getInt()));
     } else if (readNumbersAsDouble) {
       writer.float8(fieldName).writeFloat8(reader.getInt());
     } else {
@@ -377,7 +391,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeShort(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getShort()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getShort()));
     } else if (readNumbersAsDouble) {
       writer.float8(fieldName).writeFloat8(reader.getShort());
     } else {
@@ -387,7 +401,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeByte(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getByte()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getByte()));
     } else if (readNumbersAsDouble) {
       writer.float8(fieldName).writeFloat8(reader.getByte());
     } else {
@@ -397,7 +411,7 @@ public class MaprDBJsonRecordReader extends AbstractRecordReader {
 
   private void writeBoolean(MapOrListWriterImpl writer, String fieldName, DBDocumentReaderBase reader) {
     if (allTextMode) {
-      writeString(writer, String.valueOf(reader.getBoolean()), fieldName);
+      writeString(writer, fieldName, String.valueOf(reader.getBoolean()));
     } else {
       writer.bit(fieldName).writeBit(reader.getBoolean() ? 1 : 0);
     }

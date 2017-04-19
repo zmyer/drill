@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,6 +27,7 @@ import org.apache.drill.common.expression.FieldReference;
 import org.apache.drill.common.expression.LogicalExpression;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.logical.data.NamedExpression;
+import org.apache.drill.common.types.Types;
 import org.apache.drill.exec.exception.ClassTransformationException;
 import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.exception.SchemaChangeException;
@@ -125,6 +126,7 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
     return this.container;
   }
 
+  @SuppressWarnings("resource")
   private void setFlattenVector() {
     final TypedFieldId typedFieldId = incoming.getValueVectorId(popConfig.getColumn());
     final MaterializedField field = incoming.getSchema().getColumn(typedFieldId.getFieldIds()[0]);
@@ -266,6 +268,7 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
    * the end of one of the other vectors while we are copying the data of the other vectors alongside each new flattened
    * value coming out of the repeated field.)
    */
+  @SuppressWarnings("resource")
   private TransferPair getFlattenFieldTransferPair(FieldReference reference) {
     final TypedFieldId fieldId = incoming.getValueVectorId(popConfig.getColumn());
     final Class<?> vectorClass = incoming.getSchema().getColumn(fieldId.getFieldIds()[0]).getValueClass();
@@ -301,16 +304,30 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
     final List<TransferPair> transfers = Lists.newArrayList();
 
     final ClassGenerator<Flattener> cg = CodeGenerator.getRoot(Flattener.TEMPLATE_DEFINITION, context.getFunctionRegistry(), context.getOptions());
+    cg.getCodeGenerator().plainJavaCapable(true);
+    // Uncomment out this line to debug the generated code.
+//    cg.getCodeGenerator().saveCodeForDebugging(true);
     final IntHashSet transferFieldIds = new IntHashSet();
 
     final NamedExpression flattenExpr = new NamedExpression(popConfig.getColumn(), new FieldReference(popConfig.getColumn()));
     final ValueVectorReadExpression vectorRead = (ValueVectorReadExpression)ExpressionTreeMaterializer.materialize(flattenExpr.getExpr(), incoming, collector, context.getFunctionRegistry(), true);
-    final TransferPair tp = getFlattenFieldTransferPair(flattenExpr.getRef());
+    final FieldReference fieldReference = flattenExpr.getRef();
+    final TransferPair transferPair = getFlattenFieldTransferPair(fieldReference);
 
-    if (tp != null) {
-      transfers.add(tp);
-      container.add(tp.getTo());
-      transferFieldIds.add(vectorRead.getFieldId().getFieldIds()[0]);
+    if (transferPair != null) {
+      final ValueVector flattenVector = transferPair.getTo();
+
+      // checks that list has only default ValueVector and replaces resulting ValueVector to INT typed ValueVector
+      if (exprs.size() == 0 && flattenVector.getField().getType().equals(Types.LATE_BIND_TYPE)) {
+        final MaterializedField outputField = MaterializedField.create(fieldReference.getAsNamePart().getName(), Types.OPTIONAL_INT);
+        final ValueVector vector = TypeHelper.getNewVector(outputField, oContext.getAllocator());
+
+        container.add(vector);
+      } else {
+        transfers.add(transferPair);
+        container.add(flattenVector);
+        transferFieldIds.add(vectorRead.getFieldId().getFieldIds()[0]);
+      }
     }
 
     logger.debug("Added transfer for project expression.");
@@ -332,7 +349,6 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
       }
 
       final LogicalExpression expr = ExpressionTreeMaterializer.materialize(namedExpression.getExpr(), incoming, collector, context.getFunctionRegistry(), true);
-      final MaterializedField outputField = MaterializedField.create(outputName, expr.getMajorType());
       if (collector.hasErrors()) {
         throw new SchemaChangeException(String.format("Failure while trying to materialize incoming schema.  Errors:\n %s.", collector.toErrorString()));
       }
@@ -347,9 +363,25 @@ public class FlattenRecordBatch extends AbstractSingleRecordBatch<FlattenPOP> {
         // The reference name will be passed to ComplexWriter, used as the name of the output vector from the writer.
         ((DrillComplexWriterFuncHolder) ((DrillFuncHolderExpr) expr).getHolder()).setReference(namedExpression.getRef());
         cg.addExpr(expr);
-      } else{
+      } else {
         // need to do evaluation.
-        ValueVector vector = TypeHelper.getNewVector(outputField, oContext.getAllocator());
+        final MaterializedField outputField;
+        if (expr instanceof ValueVectorReadExpression) {
+          final TypedFieldId id = ValueVectorReadExpression.class.cast(expr).getFieldId();
+          @SuppressWarnings("resource")
+          final ValueVector incomingVector = incoming.getValueAccessorById(id.getIntermediateClass(), id.getFieldIds()).getValueVector();
+          // outputField is taken from the incoming schema to avoid the loss of nested fields
+          // when the first batch will be empty.
+          if (incomingVector != null) {
+            outputField = incomingVector.getField().clone();
+          } else {
+            outputField = MaterializedField.create(outputName, expr.getMajorType());
+          }
+        } else {
+          outputField = MaterializedField.create(outputName, expr.getMajorType());
+        }
+        @SuppressWarnings("resource")
+        final ValueVector vector = TypeHelper.getNewVector(outputField, oContext.getAllocator());
         allocationVectors.add(vector);
         TypedFieldId fid = container.add(vector);
         ValueVectorWriteExpression write = new ValueVectorWriteExpression(fid, expr, true);

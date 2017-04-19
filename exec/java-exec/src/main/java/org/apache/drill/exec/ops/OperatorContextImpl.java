@@ -50,6 +50,8 @@ class OperatorContextImpl extends OperatorContext implements AutoCloseable {
   private final BufferManager manager;
   private DrillFileSystem fs;
   private final ExecutorService executor;
+  private final ExecutorService scanExecutor;
+  private final ExecutorService scanDecodeExecutor;
 
   /**
    * This lazily initialized executor service is used to submit a {@link Callable task} that needs a proxy user. There
@@ -70,6 +72,8 @@ class OperatorContextImpl extends OperatorContext implements AutoCloseable {
     stats = context.getStats().newOperatorStats(def, allocator);
     executionControls = context.getExecutionControls();
     executor = context.getDrillbitContext().getExecutor();
+    scanExecutor = context.getDrillbitContext().getScanExecutor();
+    scanDecodeExecutor = context.getDrillbitContext().getScanDecodeExecutor();
   }
 
   public OperatorContextImpl(PhysicalOperator popConfig, FragmentContext context, OperatorStats stats)
@@ -81,24 +85,45 @@ class OperatorContextImpl extends OperatorContext implements AutoCloseable {
     this.stats     = stats;
     executionControls = context.getExecutionControls();
     executor = context.getDrillbitContext().getExecutor();
+    scanExecutor = context.getDrillbitContext().getScanExecutor();
+    scanDecodeExecutor = context.getDrillbitContext().getScanDecodeExecutor();
   }
 
+  @Override
   public DrillBuf replace(DrillBuf old, int newSize) {
     return manager.replace(old, newSize);
   }
 
+  @Override
   public DrillBuf getManagedBuffer() {
     return manager.getManagedBuffer();
   }
 
+  @Override
   public DrillBuf getManagedBuffer(int size) {
     return manager.getManagedBuffer(size);
   }
 
+  // Allow an operator to use the thread pool
+  @Override
+  public ExecutorService getExecutor() {
+    return executor;
+  }
+  @Override
+  public ExecutorService getScanExecutor() {
+    return scanExecutor;
+  }
+  @Override
+  public ExecutorService getScanDecodeExecutor() {
+    return scanDecodeExecutor;
+  }
+
+  @Override
   public ExecutionControls getExecutionControls() {
     return executionControls;
   }
 
+  @Override
   public BufferAllocator getAllocator() {
     if (allocator == null) {
       throw new UnsupportedOperationException("Operator context does not have an allocator");
@@ -134,10 +159,12 @@ class OperatorContextImpl extends OperatorContext implements AutoCloseable {
     closed = true;
   }
 
+  @Override
   public OperatorStats getStats() {
     return stats;
   }
 
+  @Override
   public <RESULT> ListenableFuture<RESULT> runCallableAs(final UserGroupInformation proxyUgi,
                                                          final Callable<RESULT> callable) {
     synchronized (this) {
@@ -171,6 +198,16 @@ class OperatorContextImpl extends OperatorContext implements AutoCloseable {
   public DrillFileSystem newFileSystem(Configuration conf) throws IOException {
     Preconditions.checkState(fs == null, "Tried to create a second FileSystem. Can only be called once per OperatorContext");
     fs = new DrillFileSystem(conf, getStats());
+    return fs;
+  }
+
+  @Override
+  /*
+     Creates a DrillFileSystem that does not automatically track operator stats.
+   */
+  public DrillFileSystem newNonTrackingFileSystem(Configuration conf) throws IOException {
+    Preconditions.checkState(fs == null, "Tried to create a second FileSystem. Can only be called once per OperatorContext");
+    fs = new DrillFileSystem(conf, null);
     return fs;
   }
 

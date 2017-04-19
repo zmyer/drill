@@ -20,6 +20,24 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
+#if defined _WIN32 || defined __CYGWIN__
+  #ifdef DRILL_CLIENT_EXPORTS
+      #define DECLSPEC_DRILL_CLIENT __declspec(dllexport)
+  #else
+    #ifdef USE_STATIC_LIBDRILL
+      #define DECLSPEC_DRILL_CLIENT
+    #else
+      #define DECLSPEC_DRILL_CLIENT  __declspec(dllimport)
+    #endif
+  #endif
+#else
+  #if __GNUC__ >= 4
+    #define DECLSPEC_DRILL_CLIENT __attribute__ ((visibility ("default")))
+  #else
+    #define DECLSPEC_DRILL_CLIENT
+  #endif
+#endif
+
 #ifdef _WIN32
 // The order of inclusion is important. Including winsock2 before everything else
 // ensures that the correct typedefs are defined and that the older typedefs defined
@@ -148,6 +166,9 @@ typedef enum{
 #define USERPROP_FILEPATH "pemLocation"   // Not implemented yet
 #define USERPROP_FILENAME "pemFile"       // Not implemented yet
 #define USERPROP_IMPERSONATION_TARGET "impersonation_target"
+#define USERPROP_AUTH_MECHANISM "auth"
+#define USERPROP_SERVICE_NAME "service_name"
+#define USERPROP_SERVICE_HOST "service_host"
 
 // Bitflags to describe user properties
 // Used in DrillUserProperties::USER_PROPERTIES

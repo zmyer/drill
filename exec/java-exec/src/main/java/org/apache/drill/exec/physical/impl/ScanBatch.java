@@ -32,6 +32,7 @@ import org.apache.drill.common.types.Types;
 import org.apache.drill.exec.exception.OutOfMemoryException;
 import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.expr.TypeHelper;
+import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.ops.OperatorContext;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
@@ -53,6 +54,7 @@ import org.apache.drill.exec.vector.AllocationHelper;
 import org.apache.drill.exec.vector.NullableVarCharVector;
 import org.apache.drill.exec.vector.SchemaChangeCallBack;
 import org.apache.drill.exec.vector.ValueVector;
+import org.apache.drill.common.map.CaseInsensitiveMap;
 
 import com.google.common.collect.Maps;
 
@@ -67,8 +69,8 @@ public class ScanBatch implements CloseableRecordBatch {
   private final VectorContainer container = new VectorContainer();
 
   /** Fields' value vectors indexed by fields' keys. */
-  private final Map<String, ValueVector> fieldVectorMap =
-      Maps.newHashMap();
+  private final CaseInsensitiveMap<ValueVector> fieldVectorMap =
+          CaseInsensitiveMap.newHashMap();
 
   private int recordCount;
   private final FragmentContext context;
@@ -83,6 +85,7 @@ public class ScanBatch implements CloseableRecordBatch {
   private Map<String, ValueVector> implicitVectors;
   private Iterator<Map<String, String>> implicitColumns;
   private Map<String, String> implicitValues;
+  private final BufferAllocator allocator;
 
   public ScanBatch(PhysicalOperator subScanConfig, FragmentContext context,
                    OperatorContext oContext, Iterator<RecordReader> readers,
@@ -94,6 +97,7 @@ public class ScanBatch implements CloseableRecordBatch {
     }
     currentReader = readers.next();
     this.oContext = oContext;
+    allocator = oContext.getAllocator();
 
     boolean setup = false;
     try {
@@ -229,10 +233,9 @@ public class ScanBatch implements CloseableRecordBatch {
       hasReadNonEmptyFile = true;
       populateImplicitVectors();
 
-      for (VectorWrapper w : container) {
+      for (VectorWrapper<?> w : container) {
         w.getValueVector().getMutator().setValueCount(recordCount);
       }
-
 
       // this is a slight misuse of this metric but it will allow Readers to report how many records they generated.
       final boolean isNewSchema = mutator.isNewSchema();
@@ -269,6 +272,7 @@ public class ScanBatch implements CloseableRecordBatch {
       if (implicitValues != null) {
         for (String column : implicitValues.keySet()) {
           final MaterializedField field = MaterializedField.create(column, Types.optional(MinorType.VARCHAR));
+          @SuppressWarnings("resource")
           final ValueVector v = mutator.addField(field, NullableVarCharVector.class);
           implicitVectors.put(column, v);
         }
@@ -281,6 +285,7 @@ public class ScanBatch implements CloseableRecordBatch {
   private void populateImplicitVectors() {
     if (implicitValues != null) {
       for (Map.Entry<String, String> entry : implicitValues.entrySet()) {
+        @SuppressWarnings("resource")
         final NullableVarCharVector v = (NullableVarCharVector) implicitVectors.get(entry.getKey());
         String val;
         if ((val = entry.getValue()) != null) {
@@ -324,7 +329,7 @@ public class ScanBatch implements CloseableRecordBatch {
     private boolean schemaChanged = true;
 
 
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings("resource")
     @Override
     public <T extends ValueVector> T addField(MaterializedField field,
                                               Class<T> clazz) throws SchemaChangeException {
@@ -332,7 +337,7 @@ public class ScanBatch implements CloseableRecordBatch {
       ValueVector v = fieldVectorMap.get(field.getPath());
       if (v == null || v.getClass() != clazz) {
         // Field does not exist--add it to the map and the output container.
-        v = TypeHelper.getNewVector(field, oContext.getAllocator(), callBack);
+        v = TypeHelper.getNewVector(field, allocator, callBack);
         if (!clazz.isAssignableFrom(v.getClass())) {
           throw new SchemaChangeException(
               String.format(

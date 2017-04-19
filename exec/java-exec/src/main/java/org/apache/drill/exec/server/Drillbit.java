@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -64,7 +64,7 @@ public class Drillbit implements AutoCloseable {
     Environment.logEnv("Drillbit environment: ", logger);
   }
 
-  private final static String SYSTEM_OPTIONS_NAME = "org.apache.drill.exec.server.Drillbit.system_options";
+  public final static String SYSTEM_OPTIONS_NAME = "org.apache.drill.exec.server.Drillbit.system_options";
 
   private boolean isClosed = false;
 
@@ -94,7 +94,7 @@ public class Drillbit implements AutoCloseable {
     context = new BootStrapContext(config, classpathScan);
     manager = new WorkManager(context);
 
-    webServer = new WebServer(config, context.getMetrics(), manager);
+    webServer = new WebServer(context, manager);
     boolean isDistributedMode = false;
     if (serviceSet != null) {
       coord = serviceSet.getCoordinator();
@@ -105,8 +105,7 @@ public class Drillbit implements AutoCloseable {
       isDistributedMode = true;
     }
 
-    engine = new ServiceEngine(manager.getControlMessageHandler(), manager.getUserWorker(), context,
-        manager.getWorkBus(), manager.getBee(), allowPortHunting, isDistributedMode);
+    engine = new ServiceEngine(manager, context, allowPortHunting, isDistributedMode);
 
     logger.info("Construction completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS));
   }
@@ -123,6 +122,7 @@ public class Drillbit implements AutoCloseable {
     storageRegistry.init();
     drillbitContext.getOptionManager().init();
     javaPropertiesToSystemOptions();
+    manager.getContext().getRemoteFunctionRegistry().init(context.getConfig(), storeProvider, coord);
     registrationHandle = coord.register(md);
     webServer.start();
 
