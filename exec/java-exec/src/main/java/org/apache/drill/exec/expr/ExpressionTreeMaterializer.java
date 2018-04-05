@@ -44,6 +44,7 @@ import org.apache.drill.common.expression.IfExpression.IfCondition;
 import org.apache.drill.common.expression.LogicalExpression;
 import org.apache.drill.common.expression.NullExpression;
 import org.apache.drill.common.expression.SchemaPath;
+import org.apache.drill.common.expression.TypedFieldExpr;
 import org.apache.drill.common.expression.TypedNullConstant;
 import org.apache.drill.common.expression.ValueExpressions;
 import org.apache.drill.common.expression.ValueExpressions.BooleanExpression;
@@ -78,7 +79,6 @@ import org.apache.drill.exec.expr.fn.DrillComplexWriterFuncHolder;
 import org.apache.drill.exec.expr.fn.DrillFuncHolder;
 import org.apache.drill.exec.expr.fn.ExceptionFunction;
 import org.apache.drill.exec.expr.fn.FunctionLookupContext;
-import org.apache.drill.exec.expr.stat.TypedFieldExpr;
 import org.apache.drill.exec.record.TypedFieldId;
 import org.apache.drill.exec.record.VectorAccessible;
 import org.apache.drill.exec.resolver.FunctionResolver;
@@ -216,7 +216,7 @@ public class ExpressionTreeMaterializer {
        * using an arbitrary value. We trim down the size of the stored bytes
        * to the actual size so this size doesn't really matter.
        */
-      castArgs.add(new ValueExpressions.LongExpression(TypeHelper.VARCHAR_DEFAULT_CAST_LEN, null));
+      castArgs.add(new ValueExpressions.LongExpression(Types.MAX_VARCHAR_LENGTH, null));
     }
     else if (CoreDecimalUtility.isDecimalType(toType)) {
       // Add the scale and precision to the arguments of the implicit cast
@@ -323,7 +323,6 @@ public class ExpressionTreeMaterializer {
       } else {
         logger.warn("Unable to find value vector of path {}, returning null-int instance.", path);
         return new TypedFieldExpr(path, Types.OPTIONAL_INT);
-        // return NullExpression.INSTANCE;
       }
     }
   }
@@ -423,10 +422,11 @@ public class ExpressionTreeMaterializer {
           TypeProtos.MajorType parmType = matchedFuncHolder.getParmMajorType(i);
 
           //Case 1: If  1) the argument is NullExpression
-          //            2) the parameter of matchedFuncHolder allows null input, or func's null_handling is NULL_IF_NULL (means null and non-null are exchangable).
+          //            2) the minor type of parameter of matchedFuncHolder is not LATE (the type of null expression is still unknown)
+          //            3) the parameter of matchedFuncHolder allows null input, or func's null_handling is NULL_IF_NULL (means null and non-null are exchangeable).
           //        then replace NullExpression with a TypedNullConstant
-          if (currentArg.equals(NullExpression.INSTANCE) &&
-            ( parmType.getMode().equals(TypeProtos.DataMode.OPTIONAL) ||
+          if (currentArg.equals(NullExpression.INSTANCE) && !MinorType.LATE.equals(parmType.getMinorType()) &&
+              (TypeProtos.DataMode.OPTIONAL.equals(parmType.getMode()) ||
               matchedFuncHolder.getNullHandling() == FunctionTemplate.NullHandling.NULL_IF_NULL)) {
             argsWithCast.add(new TypedNullConstant(parmType));
           } else if (Types.softEquals(parmType, currentArg.getMajorType(), matchedFuncHolder.getNullHandling() == FunctionTemplate.NullHandling.NULL_IF_NULL) ||
@@ -573,7 +573,7 @@ public class ExpressionTreeMaterializer {
      * @return
      */
     private LogicalExpression getExceptionFunction(String message) {
-      QuotedString msg = new QuotedString(message, ExpressionPosition.UNKNOWN);
+      QuotedString msg = new QuotedString(message, message.length(), ExpressionPosition.UNKNOWN);
       List<LogicalExpression> args = Lists.newArrayList();
       args.add(msg);
       FunctionCall call = new FunctionCall(ExceptionFunction.EXCEPTION_FUNCTION_NAME, args, ExpressionPosition.UNKNOWN);
@@ -855,8 +855,9 @@ public class ExpressionTreeMaterializer {
         // if the type still isn't fully bound, leave as cast expression.
         return new CastExpression(input, e.getMajorType(), e.getPosition());
       } else if (newMinor == MinorType.NULL) {
-        // if input is a NULL expression, remove cast expression and return a TypedNullConstant directly.
-        return new TypedNullConstant(Types.optional(e.getMajorType().getMinorType()));
+        // if input is a NULL expression, remove cast expression and return a TypedNullConstant directly
+        // preserve original precision and scale if present
+        return new TypedNullConstant(e.getMajorType().toBuilder().setMode(DataMode.OPTIONAL).build());
       } else {
         // if the type is fully bound, convert to functioncall and materialze the function.
         MajorType type = e.getMajorType();
@@ -869,11 +870,12 @@ public class ExpressionTreeMaterializer {
 
         //VarLen type
         if (!Types.isFixedWidthType(type)) {
-          newArgs.add(new ValueExpressions.LongExpression(type.getWidth(), null));
+          newArgs.add(new ValueExpressions.LongExpression(type.getPrecision(), null));
         }  if (CoreDecimalUtility.isDecimalType(type)) {
             newArgs.add(new ValueExpressions.LongExpression(type.getPrecision(), null));
             newArgs.add(new ValueExpressions.LongExpression(type.getScale(), null));
         }
+
         FunctionCall fc = new FunctionCall(castFuncWithType, newArgs, e.getPosition());
         return fc.accept(this, functionLookupContext);
       }
@@ -930,11 +932,7 @@ public class ExpressionTreeMaterializer {
         // 2) or "to" length is unknown (0 means unknown length?).
         // Case 1 and case 2 mean that cast will do nothing.
         // In other cases, cast is required to trim the "from" according to "to" length.
-        if ( (to.getWidth() >= from.getWidth() && from.getWidth() > 0) || to.getWidth() == 0) {
-          return true;
-        } else {
-          return false;
-        }
+        return (to.getPrecision() >= from.getPrecision() && from.getPrecision() > 0) || to.getPrecision() == 0;
 
       default:
         errorCollector.addGeneralError(pos, String.format("Casting rules are unknown for type %s.", from));

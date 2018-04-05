@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,11 +17,11 @@
  */
 package org.apache.drill.exec.expr.stat;
 
-import com.google.common.base.Preconditions;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.expression.FunctionHolderExpression;
 import org.apache.drill.common.expression.LogicalExpression;
 import org.apache.drill.common.expression.SchemaPath;
+import org.apache.drill.common.expression.TypedFieldExpr;
 import org.apache.drill.common.expression.ValueExpressions;
 import org.apache.drill.common.expression.fn.CastFunctions;
 import org.apache.drill.common.expression.fn.FuncHolder;
@@ -35,9 +35,11 @@ import org.apache.drill.exec.expr.holders.BigIntHolder;
 import org.apache.drill.exec.expr.holders.Float4Holder;
 import org.apache.drill.exec.expr.holders.Float8Holder;
 import org.apache.drill.exec.expr.holders.IntHolder;
+import org.apache.drill.exec.expr.holders.TimeStampHolder;
 import org.apache.drill.exec.expr.holders.ValueHolder;
 import org.apache.drill.exec.store.parquet.stat.ColumnStatistics;
 import org.apache.drill.exec.vector.ValueHolderHelper;
+import org.apache.parquet.column.statistics.BooleanStatistics;
 import org.apache.parquet.column.statistics.DoubleStatistics;
 import org.apache.parquet.column.statistics.FloatStatistics;
 import org.apache.parquet.column.statistics.IntStatistics;
@@ -68,18 +70,20 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
 
   @Override
   public Statistics visitUnknown(LogicalExpression e, Void value) throws RuntimeException {
-    if (e instanceof TypedFieldExpr) {
-      TypedFieldExpr fieldExpr = (TypedFieldExpr) e;
-      final ColumnStatistics columnStatistics = columnStatMap.get(fieldExpr.getPath());
-      if (columnStatistics != null) {
-        return columnStatistics.getStatistics();
-      } else {
-        // field does not exist.
-        Preconditions.checkArgument(fieldExpr.getMajorType().equals(Types.OPTIONAL_INT));
-        IntStatistics intStatistics = new IntStatistics();
-        intStatistics.setNumNulls(rowCount); // all values are nulls
-        return intStatistics;
-      }
+    // do nothing for the unknown expression
+    return null;
+  }
+
+  @Override
+  public Statistics visitTypedFieldExpr(TypedFieldExpr typedFieldExpr, Void value) throws RuntimeException {
+    final ColumnStatistics columnStatistics = columnStatMap.get(typedFieldExpr.getPath());
+    if (columnStatistics != null) {
+      return columnStatistics.getStatistics();
+    } else if (typedFieldExpr.getMajorType().equals(Types.OPTIONAL_INT)) {
+      // field does not exist.
+      IntStatistics intStatistics = new IntStatistics();
+      intStatistics.setNumNulls(rowCount); // all values are nulls
+      return intStatistics;
     }
     return null;
   }
@@ -87,6 +91,11 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
   @Override
   public Statistics visitIntConstant(ValueExpressions.IntExpression expr, Void value) throws RuntimeException {
     return getStatistics(expr.getInt());
+  }
+
+  @Override
+  public Statistics visitBooleanConstant(ValueExpressions.BooleanExpression expr, Void value) throws RuntimeException {
+    return getStatistics(expr.getBoolean());
   }
 
   @Override
@@ -150,6 +159,16 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
     final IntStatistics intStatistics = new IntStatistics();
     intStatistics.setMinMax(min, max);
     return intStatistics;
+  }
+
+  private BooleanStatistics getStatistics(boolean value) {
+    return getStatistics(value, value);
+  }
+
+  private BooleanStatistics getStatistics(boolean min, boolean max) {
+    final BooleanStatistics booleanStatistics = new BooleanStatistics();
+    booleanStatistics.setMinMax(min, max);
+    return booleanStatistics;
   }
 
   private LongStatistics getStatistics(long value) {
@@ -217,6 +236,10 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
         minHolder = ValueHolderHelper.getFloat8Holder(((DoubleStatistics)input).getMin());
         maxHolder = ValueHolderHelper.getFloat8Holder(((DoubleStatistics)input).getMax());
         break;
+      case DATE:
+        minHolder = ValueHolderHelper.getDateHolder(((LongStatistics)input).getMin());
+        maxHolder = ValueHolderHelper.getDateHolder(((LongStatistics)input).getMax());
+        break;
       default:
         return null;
       }
@@ -237,6 +260,8 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
         return getStatistics( ((Float4Holder)minFuncHolder).value, ((Float4Holder)maxFuncHolder).value);
       case FLOAT8:
         return getStatistics( ((Float8Holder)minFuncHolder).value, ((Float8Holder)maxFuncHolder).value);
+      case TIMESTAMP:
+        return getStatistics(((TimeStampHolder) minFuncHolder).value, ((TimeStampHolder) maxFuncHolder).value);
       default:
         return null;
       }
@@ -245,7 +270,7 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
     }
   }
 
-  static Map<TypeProtos.MinorType, Set<TypeProtos.MinorType>> CAST_FUNC = new HashMap<>();
+  private static final Map<TypeProtos.MinorType, Set<TypeProtos.MinorType>> CAST_FUNC = new HashMap<>();
   static {
     // float -> double , int, bigint
     CAST_FUNC.put(TypeProtos.MinorType.FLOAT4, new HashSet<TypeProtos.MinorType>());
@@ -270,6 +295,10 @@ public class RangeExprEvaluator extends AbstractExprVisitor<Statistics, Void, Ru
     CAST_FUNC.get(TypeProtos.MinorType.BIGINT).add(TypeProtos.MinorType.INT);
     CAST_FUNC.get(TypeProtos.MinorType.BIGINT).add(TypeProtos.MinorType.FLOAT4);
     CAST_FUNC.get(TypeProtos.MinorType.BIGINT).add(TypeProtos.MinorType.FLOAT8);
+
+    // date -> timestamp
+    CAST_FUNC.put(TypeProtos.MinorType.DATE, new HashSet<TypeProtos.MinorType>());
+    CAST_FUNC.get(TypeProtos.MinorType.DATE).add(TypeProtos.MinorType.TIMESTAMP);
   }
 
 }

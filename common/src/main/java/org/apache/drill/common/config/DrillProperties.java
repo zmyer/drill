@@ -17,6 +17,7 @@
  */
 package org.apache.drill.common.config;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableSet;
 import org.apache.drill.exec.proto.UserProtos.Property;
 import org.apache.drill.exec.proto.UserProtos.UserProperties;
@@ -59,11 +60,28 @@ public final class DrillProperties extends Properties {
 
   public static final String KEYTAB = "keytab";
 
+  public static final String SASL_ENCRYPT = "sasl_encrypt";
+
+  // Should only be used for testing backward compatibility
+  @VisibleForTesting
+  public static final String TEST_SASL_LEVEL = "test_sasl_level";
+
   // for subject that has pre-authenticated to KDC (AS) i.e. required credentials are populated in
   // Subject's credentials set
   public static final String KERBEROS_FROM_SUBJECT = "from_subject";
 
   public static final String QUOTING_IDENTIFIERS = "quoting_identifiers";
+
+  public static final String ENABLE_TLS = "enableTLS";
+  public static final String TLS_PROTOCOL = "TLSProtocol";
+  public static final String TRUSTSTORE_TYPE = "trustStoreType";
+  public static final String TRUSTSTORE_PATH = "trustStorePath";
+  public static final String TRUSTSTORE_PASSWORD = "trustStorePassword";
+  public static final String DISABLE_HOST_VERIFICATION = "disableHostVerification";
+  public static final String DISABLE_CERT_VERIFICATION = "disableCertificateVerification";
+  public static final String TLS_HANDSHAKE_TIMEOUT = "TLSHandshakeTimeout";
+  public static final String TLS_PROVIDER = "TLSProvider";
+  public static final String USE_SYSTEM_TRUSTSTORE = "useSystemTrustStore";
 
   // Although all properties from the application are sent to the server (from the client), the following
   // sets of properties are used by the client and server respectively. These are reserved words.
@@ -73,7 +91,10 @@ public final class DrillProperties extends Properties {
           ZOOKEEPER_CONNECTION, DRILLBIT_CONNECTION, TRIES,
           SCHEMA,
           USER, PASSWORD, IMPERSONATION_TARGET, AUTH_MECHANISM,
-          SERVICE_PRINCIPAL, SERVICE_NAME, SERVICE_HOST, REALM, KEYTAB, KERBEROS_FROM_SUBJECT
+          SERVICE_PRINCIPAL, SERVICE_NAME, SERVICE_HOST, REALM, KEYTAB, KERBEROS_FROM_SUBJECT,
+          ENABLE_TLS, TLS_PROTOCOL, TRUSTSTORE_TYPE, TRUSTSTORE_PATH, TRUSTSTORE_PASSWORD,
+          DISABLE_HOST_VERIFICATION, DISABLE_CERT_VERIFICATION, TLS_HANDSHAKE_TIMEOUT, TLS_PROVIDER,
+          USE_SYSTEM_TRUSTSTORE
       );
 
   public static final ImmutableSet<String> ACCEPTED_BY_SERVER = ImmutableSet.of(
@@ -107,6 +128,15 @@ public final class DrillProperties extends Properties {
     }
     for (final String key : overrides.stringPropertyNames()) {
       setProperty(key.toLowerCase(), overrides.getProperty(key));
+    }
+  }
+
+  public void merge(final Map<String, String> overrides) {
+    if (overrides == null) {
+      return;
+    }
+    for (final String key : overrides.keySet()) {
+      setProperty(key.toLowerCase(), overrides.get(key));
     }
   }
 

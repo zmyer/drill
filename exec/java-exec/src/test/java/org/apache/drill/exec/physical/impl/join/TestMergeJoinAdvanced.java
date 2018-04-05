@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,36 +17,52 @@
  */
 package org.apache.drill.exec.physical.impl.join;
 
-import org.apache.drill.BaseTestQuery;
-import org.apache.drill.common.util.TestTools;
+import org.apache.drill.test.TestTools;
+import org.apache.drill.categories.OperatorTest;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.Ignore;
+import org.junit.experimental.categories.Category;
 import org.junit.rules.TestRule;
 
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.Random;
 
-public class TestMergeJoinAdvanced extends BaseTestQuery {
+@Category(OperatorTest.class)
+public class TestMergeJoinAdvanced extends JoinTestBase {
+  private static final String LEFT = "merge-join-left.json";
+  private static final String RIGHT = "merge-join-right.json";
+
+
+  private static File leftFile;
+  private static File rightFile;
+
+
   @Rule
   public final TestRule TIMEOUT = TestTools.getTimeoutRule(120000); // Longer timeout than usual.
 
   // Have to disable hash join to test merge join in this class
   @BeforeClass
-  public static void disableMergeJoin() throws Exception {
-    test("alter session set `planner.enable_hashjoin` = false");
+  public static void enableMergeJoin() throws Exception {
+    test(DISABLE_HJ);
+
+    leftFile = new File(dirTestWatcher.getRootDir(), LEFT);
+    rightFile = new File(dirTestWatcher.getRootDir(), RIGHT);
+
+    dirTestWatcher.copyResourceToRoot(Paths.get("join"));
   }
 
   @AfterClass
-  public static void enableMergeJoin() throws Exception {
-    test("alter session set `planner.enable_hashjoin` = true");
+  public static void disableMergeJoin() throws Exception {
+    test(ENABLE_HJ);
   }
 
   @Test
@@ -56,7 +72,7 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
 
     testBuilder()
         .sqlQuery(query)
-        .optionSettingQueriesForTestQuery("alter session set `planner.enable_hashjoin` = true")
+        .optionSettingQueriesForTestQuery(ENABLE_HJ)
         .unOrdered()
         .baselineColumns("full_name")
         .baselineValues("Sheri Nowmer")
@@ -70,7 +86,7 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
 
     testBuilder()
         .sqlQuery(query)
-        .optionSettingQueriesForTestQuery("alter session set `planner.enable_hashjoin` = true")
+        .optionSettingQueriesForTestQuery(ENABLE_HJ)
         .unOrdered()
         .baselineColumns("bigint_col")
         .baselineValues(1l)
@@ -96,16 +112,10 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
     setSessionOption(ExecConstants.SLICE_TARGET, "1");
     setSessionOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY, "23");
 
-    final String TEST_RES_PATH = TestTools.getWorkingPath() + "/src/test/resources";
-
     try {
-      test("select * from dfs_test.`%s/join/j1` j1 left outer join dfs_test.`%s/join/j2` j2 on (j1.c_varchar = j2.c_varchar)",
-        TEST_RES_PATH, TEST_RES_PATH);
+      test("select * from dfs.`join/j1` j1 left outer join dfs.`join/j2` j2 on (j1.c_varchar = j2.c_varchar)");
     } finally {
-      setSessionOption(PlannerSettings.BROADCAST.getOptionName(), String.valueOf(PlannerSettings.BROADCAST.getDefault().bool_val));
-      setSessionOption(PlannerSettings.HASHJOIN.getOptionName(), String.valueOf(PlannerSettings.HASHJOIN.getDefault().bool_val));
-      setSessionOption(ExecConstants.SLICE_TARGET, String.valueOf(ExecConstants.SLICE_TARGET_DEFAULT));
-      setSessionOption(ExecConstants.MAX_WIDTH_PER_NODE_KEY, String.valueOf(ExecConstants.MAX_WIDTH_PER_NODE.getDefault().num_val));
+      test("ALTER SESSION RESET ALL");
     }
   }
 
@@ -130,16 +140,14 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
 
   private static void testMultipleBatchJoin(final long right, final long left,
                                             final String joinType, final long expected) throws Exception {
-    final String leftSide = BaseTestQuery.getTempDir("merge-join-left.json");
-    final String rightSide = BaseTestQuery.getTempDir("merge-join-right.json");
-    final BufferedWriter leftWriter = new BufferedWriter(new FileWriter(new File(leftSide)));
-    final BufferedWriter rightWriter = new BufferedWriter(new FileWriter(new File(rightSide)));
+    final BufferedWriter leftWriter = new BufferedWriter(new FileWriter(leftFile));
+    final BufferedWriter rightWriter = new BufferedWriter(new FileWriter(rightFile));
     generateData(leftWriter, rightWriter, left, right);
-    final String query1 = String.format("select count(*) c1 from dfs_test.`%s` L %s join dfs_test.`%s` R on L.k=R.k1",
-      leftSide, joinType, rightSide);
+    final String query1 = String.format("select count(*) c1 from dfs.`%s` L %s join dfs.`%s` R on L.k=R.k1",
+      LEFT, joinType, RIGHT);
     testBuilder()
       .sqlQuery(query1)
-      .optionSettingQueriesForTestQuery("alter session set `planner.enable_hashjoin` = false")
+      .optionSettingQueriesForTestQuery(DISABLE_HJ)
       .unOrdered()
       .baselineColumns("c1")
       .baselineValues(expected)
@@ -217,10 +225,8 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
 
   @Test
   public void testDrill4196() throws Exception {
-    final String leftSide = BaseTestQuery.getTempDir("merge-join-left.json");
-    final String rightSide = BaseTestQuery.getTempDir("merge-join-right.json");
-    final BufferedWriter leftWriter = new BufferedWriter(new FileWriter(new File(leftSide)));
-    final BufferedWriter rightWriter = new BufferedWriter(new FileWriter(new File(rightSide)));
+    final BufferedWriter leftWriter = new BufferedWriter(new FileWriter(leftFile));
+    final BufferedWriter rightWriter = new BufferedWriter(new FileWriter(rightFile));
 
     // output batch is 32k, create 60k left batch
     leftWriter.write(String.format("{ \"k\" : %d , \"v\": %d }", 9999, 9999));
@@ -238,14 +244,29 @@ public class TestMergeJoinAdvanced extends BaseTestQuery {
     leftWriter.close();
     rightWriter.close();
 
-    final String query1 = String.format("select count(*) c1 from dfs_test.`%s` L %s join dfs_test.`%s` R on L.k=R.k1",
-      leftSide, "inner", rightSide);
+    final String query1 = String.format("select count(*) c1 from dfs.`%s` L %s join dfs.`%s` R on L.k=R.k1",
+      LEFT, "inner", RIGHT);
     testBuilder()
       .sqlQuery(query1)
-      .optionSettingQueriesForTestQuery("alter session set `planner.enable_hashjoin` = false")
+      .optionSettingQueriesForTestQuery(DISABLE_HJ)
       .unOrdered()
       .baselineColumns("c1")
       .baselineValues(6000*800L)
       .go();
+  }
+
+  @Test
+  public void testMergeLeftJoinWithEmptyTable() throws Exception {
+    testJoinWithEmptyFile(dirTestWatcher.getRootDir(),"left outer", new String[] {MJ_PATTERN, LEFT_JOIN_TYPE}, 1155L);
+  }
+
+  @Test
+  public void testMergeInnerJoinWithEmptyTable() throws Exception {
+    testJoinWithEmptyFile(dirTestWatcher.getRootDir(), "inner", new String[] {MJ_PATTERN, INNER_JOIN_TYPE}, 0L);
+  }
+
+  @Test
+  public void testMergeRightJoinWithEmptyTable() throws Exception {
+    testJoinWithEmptyFile(dirTestWatcher.getRootDir(), "right outer", new String[] {MJ_PATTERN, RIGHT_JOIN_TYPE}, 0L);
   }
 }

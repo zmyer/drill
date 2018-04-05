@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -26,6 +26,7 @@ import org.apache.drill.common.expression.IfExpression;
 import org.apache.drill.common.expression.LogicalExpression;
 import org.apache.drill.common.expression.NullExpression;
 import org.apache.drill.common.expression.SchemaPath;
+import org.apache.drill.common.expression.TypedFieldExpr;
 import org.apache.drill.common.expression.TypedNullConstant;
 import org.apache.drill.common.expression.ValueExpressions.BooleanExpression;
 import org.apache.drill.common.expression.ValueExpressions.DateExpression;
@@ -39,12 +40,12 @@ import org.apache.drill.common.expression.ValueExpressions.IntExpression;
 import org.apache.drill.common.expression.ValueExpressions.IntervalDayExpression;
 import org.apache.drill.common.expression.ValueExpressions.IntervalYearExpression;
 import org.apache.drill.common.expression.ValueExpressions.LongExpression;
+import org.apache.drill.common.expression.ValueExpressions.ParameterExpression;
 import org.apache.drill.common.expression.ValueExpressions.QuotedString;
 import org.apache.drill.common.expression.ValueExpressions.TimeExpression;
 import org.apache.drill.common.expression.ValueExpressions.TimeStampExpression;
 
 public abstract class AbstractExprVisitor<T, VAL, EXCEP extends Exception> implements ExprVisitor<T, VAL, EXCEP> {
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(AbstractExprVisitor.class);
 
   @Override
   public T visitFunctionCall(FunctionCall call, VAL value) throws EXCEP {
@@ -172,5 +173,13 @@ public abstract class AbstractExprVisitor<T, VAL, EXCEP extends Exception> imple
     throw new UnsupportedOperationException(String.format("Expression of type %s not handled by visitor type %s.", e.getClass().getCanonicalName(), this.getClass().getCanonicalName()));
   }
 
+  @Override
+  public T visitParameter(ParameterExpression e, VAL value) throws EXCEP {
+    return visitUnknown(e, value);
+  }
 
+  @Override
+  public T visitTypedFieldExpr(TypedFieldExpr e, VAL value) throws EXCEP {
+    return visitUnknown(e, value);
+  }
 }

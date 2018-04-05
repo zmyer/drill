@@ -22,6 +22,8 @@ import static org.junit.Assert.assertEquals;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.drill.categories.SlowTest;
+import org.apache.drill.categories.SqlTest;
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.expression.ErrorCollector;
 import org.apache.drill.common.expression.ErrorCollectorImpl;
@@ -33,7 +35,7 @@ import org.apache.drill.exec.expr.ExpressionTreeMaterializer;
 import org.apache.drill.exec.expr.TypeHelper;
 import org.apache.drill.exec.expr.fn.interpreter.InterpreterEvaluator;
 import org.apache.drill.exec.expr.holders.TimeStampHolder;
-import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.exec.ops.FragmentContextImpl;
 import org.apache.drill.exec.physical.impl.ScanBatch;
 import org.apache.drill.exec.pop.PopUnitTestBase;
 import org.apache.drill.exec.proto.BitControl;
@@ -51,7 +53,9 @@ import org.joda.time.DateTimeZone;
 import org.junit.Test;
 
 import com.google.common.collect.Lists;
+import org.junit.experimental.categories.Category;
 
+@Category({SlowTest.class, SqlTest.class})
 public class ExpressionInterpreterTest  extends PopUnitTestBase {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ExpressionInterpreterTest.class);
 
@@ -152,7 +156,6 @@ public class ExpressionInterpreterTest  extends PopUnitTestBase {
   protected void doTest(String expressionStr, String[] colNames, TypeProtos.MajorType[] colTypes, String[] expectFirstTwoValues, BitControl.PlanFragment planFragment) throws Exception {
     @SuppressWarnings("resource")
     final RemoteServiceSet serviceSet = RemoteServiceSet.getLocalServiceSet();
-    @SuppressWarnings("resource")
     final Drillbit bit1 = new Drillbit(CONFIG, serviceSet);
 
     bit1.run();
@@ -169,7 +172,6 @@ public class ExpressionInterpreterTest  extends PopUnitTestBase {
     final MockTableDef.MockScanEntry entry = new MockTableDef.MockScanEntry(10, false, 0, 1, columns);
     final MockSubScanPOP scanPOP = new MockSubScanPOP("testTable", false, java.util.Collections.singletonList(entry));
 
-    @SuppressWarnings("resource")
     final ScanBatch batch = createMockScanBatch(bit1, scanPOP, planFragment);
 
     batch.next();
@@ -196,8 +198,8 @@ public class ExpressionInterpreterTest  extends PopUnitTestBase {
     final MockScanBatchCreator creator = new MockScanBatchCreator();
 
     try {
-      final FragmentContext context =
-          new FragmentContext(bit.getContext(), planFragment, null, bit.getContext().getFunctionImplementationRegistry());
+      final FragmentContextImpl context =
+          new FragmentContextImpl(bit.getContext(), planFragment, null, bit.getContext().getFunctionImplementationRegistry());
       return creator.getBatch(context,scanPOP, children);
     } catch (Exception ex) {
       throw new DrillRuntimeException("Error when setup fragment context" + ex);

@@ -6,11 +6,13 @@
       workspaces: {
         "root" : {
           location: "/",
-          writable: false
+          writable: false,
+          allowAccessOutsideWorkspace: false
         },
         "tmp" : {
           location: "/tmp",
-          writable: true
+          writable: true,
+          allowAccessOutsideWorkspace: false
         }
       },
       formats: {
@@ -40,6 +42,9 @@
         "json" : {
           type: "json",
           extensions: [ "json" ]
+        },
+        "pcap" : {
+          type: "pcap"
         },
         "avro" : {
           type: "avro"

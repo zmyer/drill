@@ -45,7 +45,7 @@
 # configuration file. The option takes precedence over the
 # DRILL_CONF_DIR environment variable.
 #
-# The command is one of: start|stop|status|restart|run
+# The command is one of: start|stop|status|restart|run|graceful_stop
 #
 # Additional arguments are passed as JVM options to the Drill-bit.
 # They typically are of the form:
@@ -56,13 +56,18 @@
 # The value overrides any value in the user or Drill configuration files.
 
 usage="Usage: drillbit.sh [--config|--site <site-dir>]\
- (start|stop|status|restart|run) [args]"
+ (start|stop|status|restart|run|graceful_stop) [args]"
 
 bin=`dirname "${BASH_SOURCE-$0}"`
 bin=`cd -P "$bin">/dev/null; pwd`
 
 base=`basename "${BASH_SOURCE-$0}"`
 command=${base/.*/}
+
+# Environment variable to indicate Drillbit is being setup. Later drill-env.sh
+# and distrib-env.sh can consume this to set common environment variable differently
+# for Drillbit and Sqlline.
+export DRILLBIT_CONTEXT=1
 
 # Setup environment. This parses, and removes, the
 # options --config conf-dir parameters.
@@ -87,15 +92,18 @@ waitForProcessEnd()
 {
   pidKilled=$1
   commandName=$2
+  kill_drillbit=$3
   processedAt=`date +%s`
   origcnt=${DRILL_STOP_TIMEOUT:-120}
   while kill -0 $pidKilled > /dev/null 2>&1;
    do
      echo -n "."
      sleep 1;
-     # if process persists more than $DRILL_STOP_TIMEOUT (default 120 sec) no mercy
-     if [ $(( `date +%s` - $processedAt )) -gt $origcnt ]; then
-       break;
+     if [ "$kill_drillbit" = true ] ; then
+        # if process persists more than $DRILL_STOP_TIMEOUT (default 120 sec) no mercy
+        if [ $(( `date +%s` - $processedAt )) -gt $origcnt ]; then
+          break;
+        fi
      fi
   done
   echo
@@ -150,6 +158,7 @@ start_bit ( )
 
 stop_bit ( )
 {
+  kill_drillbit=$1
   if [ -f $pid ]; then
     pidToKill=`cat $pid`
     # kill -0 == see if the PID exists
@@ -157,7 +166,7 @@ stop_bit ( )
       echo "Stopping $command"
       echo "`date` Terminating $command pid $pidToKill" >> "$DRILLBIT_LOG_PATH"
       kill $pidToKill > /dev/null 2>&1
-      waitForProcessEnd $pidToKill $command
+      waitForProcessEnd $pidToKill $command $kill_drillbit
       retval=0
     else
       retval=$?
@@ -194,13 +203,25 @@ case $startStopStatus in
   ;;
 
 (stop)
-  stop_bit
+  kill_drillbit=true
+  stop_bit $kill_drillbit
+  exit $?
+  ;;
+
+# Shutdown the drillbit gracefully without disrupting the in-flight queries.
+# In this case, if there are any long running queries the drillbit will take a
+# little longer to shutdown. Incase if the user wishes to shutdown immediately
+# they can issue stop instead of graceful_stop.
+(graceful_stop)
+  kill_drillbit=false
+  stop_bit $kill_drillbit
   exit $?
   ;;
 
 (restart)
   # stop the command
-  stop_bit
+  kill_drillbit=true
+  stop_bit $kill_drillbit
   # wait a user-specified sleep period
   sp=${DRILL_RESTART_SLEEP:-3}
   if [ $sp -gt 0 ]; then

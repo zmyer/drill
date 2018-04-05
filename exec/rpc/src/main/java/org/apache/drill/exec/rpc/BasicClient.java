@@ -17,10 +17,14 @@
  */
 package org.apache.drill.exec.rpc;
 
+import com.google.common.base.Preconditions;
+import com.google.protobuf.Internal.EnumLite;
+import com.google.protobuf.MessageLite;
+import com.google.protobuf.Parser;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
-import io.netty.channel.ChannelFuture;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
@@ -32,18 +36,17 @@ import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
-
-import java.net.SocketAddress;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.proto.GeneralRPCProtos.RpcMode;
-import org.apache.drill.exec.rpc.RpcConnectionHandler.FailureType;
+import org.apache.drill.exec.rpc.security.AuthenticationOutcomeListener;
+import org.apache.drill.exec.rpc.security.AuthenticatorFactory;
+import org.apache.hadoop.security.UserGroupInformation;
 
-import com.google.common.base.Preconditions;
-import com.google.protobuf.Internal.EnumLite;
-import com.google.protobuf.MessageLite;
-import com.google.protobuf.Parser;
+import javax.security.sasl.SaslClient;
+import javax.security.sasl.SaslException;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  *
@@ -69,6 +72,10 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
   private final Parser<HR> handshakeParser;
 
   private final IdlePingHandler pingHandler;
+  private ConnectionMultiListener.SSLHandshakeListener sslHandshakeListener = null;
+
+  // Determines if authentication is completed between client and server
+  private boolean authComplete = true;
 
   public BasicClient(RpcConfig rpcMapping, ByteBufAllocator alloc, EventLoopGroup eventLoopGroup, T handshakeType,
                      Class<HR> responseClass, Parser<HR> handshakeParser) {
@@ -100,24 +107,56 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
             ch.closeFuture().addListener(getCloseHandler(ch, connection));
 
             final ChannelPipeline pipe = ch.pipeline();
-
-            pipe.addLast("protocol-decoder", getDecoder(connection.getAllocator()));
-            pipe.addLast("message-decoder", new RpcDecoder("c-" + rpcConfig.getName()));
-            pipe.addLast("protocol-encoder", new RpcEncoder("c-" + rpcConfig.getName()));
-            pipe.addLast("handshake-handler", new ClientHandshakeHandler(connection));
-
-            if(pingHandler != null){
-              pipe.addLast("idle-state-handler", pingHandler);
+            // Make sure that the SSL handler is the first handler in the pipeline so everything is encrypted
+            if (isSslEnabled()) {
+              setupSSL(pipe, sslHandshakeListener);
             }
 
-            pipe.addLast("message-handler", new InboundHandler(connection));
-            pipe.addLast("exception-handler", new RpcExceptionHandler<CC>(connection));
+            pipe.addLast(RpcConstants.PROTOCOL_DECODER, getDecoder(connection.getAllocator()));
+            pipe.addLast(RpcConstants.MESSAGE_DECODER, new RpcDecoder("c-" + rpcConfig.getName()));
+            pipe.addLast(RpcConstants.PROTOCOL_ENCODER, new RpcEncoder("c-" + rpcConfig.getName()));
+            pipe.addLast(RpcConstants.HANDSHAKE_HANDLER, new ClientHandshakeHandler(connection));
+
+            if(pingHandler != null){
+              pipe.addLast(RpcConstants.IDLE_STATE_HANDLER, pingHandler);
+            }
+
+            pipe.addLast(RpcConstants.MESSAGE_HANDLER, new InboundHandler(connection));
+            pipe.addLast(RpcConstants.EXCEPTION_HANDLER, new RpcExceptionHandler<>(connection));
           }
         }); //
 
     // if(TransportCheck.SUPPORTS_EPOLL){
     // b.option(EpollChannelOption.SO_REUSEPORT, true); //
     // }
+  }
+
+  // Adds a SSL handler if enabled. Required only for client and server communications, so
+  // a real implementation is only available for UserClient
+  protected void setupSSL(ChannelPipeline pipe, ConnectionMultiListener.SSLHandshakeListener sslHandshakeListener) {
+    throw new UnsupportedOperationException("SSL is implemented only by the User Client.");
+  }
+
+  protected boolean isSslEnabled() {
+    return false;
+  }
+
+  /**
+   * Set's the state for authentication complete.
+   * @param authComplete - state to set. True means authentication between client and server is completed, false
+   *                     means authentication is in progress.
+   */
+  protected void setAuthComplete(boolean authComplete) {
+    this.authComplete = authComplete;
+  }
+
+  protected boolean isAuthComplete() {
+    return authComplete;
+  }
+
+  // Save the SslChannel after the SSL handshake so it can be closed later
+  public void setSslChannel(Channel c) {
+
   }
 
   @Override
@@ -144,7 +183,7 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
       }
     };
 
-    public IdlePingHandler(long idleWaitInMillis) {
+    IdlePingHandler(long idleWaitInMillis) {
       super(0, idleWaitInMillis, 0, TimeUnit.MILLISECONDS);
     }
 
@@ -162,7 +201,67 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
     return (connection != null) && connection.isActive();
   }
 
-  protected abstract void validateHandshake(HR validateHandshake) throws RpcException;
+  protected abstract List<String> validateHandshake(HR validateHandshake) throws RpcException;
+
+  /**
+   * Creates various instances needed to start the SASL handshake. This is called from
+   * {@link BasicClient#validateHandshake(MessageLite)} if authentication is required from server side.
+   * @param connectionHandler - Connection handler used by client's to know about success/failure conditions.
+   * @param serverAuthMechanisms - List of auth mechanisms configured on server side
+   */
+  protected abstract void prepareSaslHandshake(final RpcConnectionHandler<CC> connectionHandler,
+                                               List<String> serverAuthMechanisms) throws RpcException;
+
+  /**
+   * Main method which starts the SASL handshake for all client channels (user/data/control) once it's determined
+   * after regular RPC handshake that authentication is required by server side. Once authentication is completed
+   * then only the underlying channel is made available to clients to send other RPC messages. Success and failure
+   * events are notified to the connection handler on which client waits.
+   * @param connectionHandler - Connection handler used by client's to know about success/failure conditions.
+   * @param saslProperties - SASL related properties needed to create SASL client.
+   * @param ugi - UserGroupInformation with logged in client side user
+   * @param authFactory - Authentication factory to use for this SASL handshake.
+   * @param rpcType - SASL_MESSAGE rpc type.
+   */
+  protected void startSaslHandshake(final RpcConnectionHandler<CC> connectionHandler,
+                                    Map<String, ?> saslProperties, UserGroupInformation ugi,
+                                    AuthenticatorFactory authFactory, T rpcType) {
+    final String mechanismName = authFactory.getSimpleName();
+    try {
+      final SaslClient saslClient = authFactory.createSaslClient(ugi, saslProperties);
+      if (saslClient == null) {
+        final Exception ex = new SaslException(String.format("Cannot initiate authentication using %s mechanism. " +
+          "Insufficient credentials or selected mechanism doesn't support configured security layers?", mechanismName));
+        connectionHandler.connectionFailed(RpcConnectionHandler.FailureType.AUTHENTICATION, ex);
+        return;
+      }
+      connection.setSaslClient(saslClient);
+    } catch (final SaslException e) {
+      logger.error("Failed while creating SASL client for SASL handshake for connection", connection.getName());
+      connectionHandler.connectionFailed(RpcConnectionHandler.FailureType.AUTHENTICATION, e);
+      return;
+    }
+
+    logger.debug("Initiating SASL exchange.");
+    new AuthenticationOutcomeListener<>(this, connection, rpcType, ugi,
+      new RpcOutcomeListener<Void>() {
+      @Override
+      public void failed(RpcException ex) {
+        connectionHandler.connectionFailed(RpcConnectionHandler.FailureType.AUTHENTICATION, ex);
+      }
+
+      @Override
+      public void success(Void value, ByteBuf buffer) {
+        authComplete = true;
+        connectionHandler.connectionSucceeded(connection);
+      }
+
+      @Override
+      public void interrupted(InterruptedException ex) {
+        connectionHandler.connectionFailed(RpcConnectionHandler.FailureType.AUTHENTICATION, ex);
+      }
+    }).initiate(mechanismName);
+  }
 
   protected void finalizeConnection(HR handshake, CC connection) {
     // no-op
@@ -179,124 +278,33 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
     return super.send(connection, rpcType, protobufBody, clazz, dataBodies);
   }
 
-  // the command itself must be "run" by the caller (to avoid calling inEventLoop)
-  protected <M extends MessageLite> RpcCommand<M, CC>
-  getInitialCommand(final RpcCommand<M, CC> command) {
-    return command;
+  public <SEND extends MessageLite, RECEIVE extends MessageLite>
+  void send(RpcOutcomeListener<RECEIVE> listener, SEND protobufBody, boolean allowInEventLoop,
+      ByteBuf... dataBodies) {
+    super.send(listener, connection, handshakeType, protobufBody, (Class<RECEIVE>) responseClass,
+        allowInEventLoop, dataBodies);
   }
 
   protected void connectAsClient(RpcConnectionHandler<CC> connectionListener, HS handshakeValue,
                                  String host, int port) {
-    ConnectionMultiListener cml = new ConnectionMultiListener(connectionListener, handshakeValue);
+    ConnectionMultiListener<T, CC, HS, HR, BasicClient<T, CC, HS, HR>> cml;
+    ConnectionMultiListener.Builder<T, CC, HS, HR, BasicClient<T, CC, HS, HR> > builder =
+        ConnectionMultiListener.newBuilder(connectionListener, handshakeValue, this);
+    if (isSslEnabled()) {
+      cml = builder.enableSSL().build();
+      sslHandshakeListener = new ConnectionMultiListener.SSLHandshakeListener();
+      sslHandshakeListener.setParent(cml);
+    } else {
+      cml = builder.build();
+    }
     b.connect(host, port).addListener(cml.connectionHandler);
-  }
-
-  private class ConnectionMultiListener {
-    private final RpcConnectionHandler<CC> l;
-    private final HS handshakeValue;
-
-    public ConnectionMultiListener(RpcConnectionHandler<CC> l, HS handshakeValue) {
-      assert l != null;
-      assert handshakeValue != null;
-
-      this.l = l;
-      this.handshakeValue = handshakeValue;
-    }
-
-    public final ConnectionHandler connectionHandler = new ConnectionHandler();
-    public final HandshakeSendHandler handshakeSendHandler = new HandshakeSendHandler();
-
-    /**
-     * Manages connection establishment outcomes.
-     */
-    private class ConnectionHandler implements GenericFutureListener<ChannelFuture> {
-
-      @Override
-      public void operationComplete(ChannelFuture future) throws Exception {
-        boolean isInterrupted = false;
-
-        // We want to wait for at least 120 secs when interrupts occur. Establishing a connection fails/succeeds quickly,
-        // So there is no point propagating the interruption as failure immediately.
-        long remainingWaitTimeMills = 120000;
-        long startTime = System.currentTimeMillis();
-        // logger.debug("Connection operation finished.  Success: {}", future.isSuccess());
-        while(true) {
-          try {
-            future.get(remainingWaitTimeMills, TimeUnit.MILLISECONDS);
-            if (future.isSuccess()) {
-              SocketAddress remote = future.channel().remoteAddress();
-              SocketAddress local = future.channel().localAddress();
-              setAddresses(remote, local);
-              // send a handshake on the current thread. This is the only time we will send from within the event thread.
-              // We can do this because the connection will not be backed up.
-              send(handshakeSendHandler, connection, handshakeType, handshakeValue, responseClass, true);
-            } else {
-              l.connectionFailed(FailureType.CONNECTION, new RpcException("General connection failure."));
-            }
-            // logger.debug("Handshake queued for send.");
-            break;
-          } catch (final InterruptedException interruptEx) {
-            remainingWaitTimeMills -= (System.currentTimeMillis() - startTime);
-            startTime = System.currentTimeMillis();
-            isInterrupted = true;
-            if (remainingWaitTimeMills < 1) {
-              l.connectionFailed(FailureType.CONNECTION, interruptEx);
-              break;
-            }
-            // Ignore the interrupt and continue to wait until we elapse remainingWaitTimeMills.
-          } catch (final Exception ex) {
-            logger.error("Failed to establish connection", ex);
-            l.connectionFailed(FailureType.CONNECTION, ex);
-            break;
-          }
-        }
-
-        if (isInterrupted) {
-          // Preserve evidence that the interruption occurred so that code higher up on the call stack can learn of the
-          // interruption and respond to it if it wants to.
-          Thread.currentThread().interrupt();
-        }
-      }
-    }
-
-    /**
-     * manages handshake outcomes.
-     */
-    private class HandshakeSendHandler implements RpcOutcomeListener<HR> {
-
-      @Override
-      public void failed(RpcException ex) {
-        logger.debug("Failure while initiating handshake", ex);
-        l.connectionFailed(FailureType.HANDSHAKE_COMMUNICATION, ex);
-      }
-
-      @Override
-      public void success(HR value, ByteBuf buffer) {
-        // logger.debug("Handshake received. {}", value);
-        try {
-          validateHandshake(value);
-          finalizeConnection(value, connection);
-          l.connectionSucceeded(connection);
-          // logger.debug("Handshake completed succesfully.");
-        } catch (Exception ex) {
-          logger.debug("Failure while validating handshake", ex);
-          l.connectionFailed(FailureType.HANDSHAKE_VALIDATION, ex);
-        }
-      }
-
-      @Override
-      public void interrupted(final InterruptedException ex) {
-        logger.warn("Interrupted while waiting for handshake response", ex);
-        l.connectionFailed(FailureType.HANDSHAKE_COMMUNICATION, ex);
-      }
-    }
   }
 
   private class ClientHandshakeHandler extends AbstractHandshakeHandler<HR> {
 
     private final CC connection;
 
-    public ClientHandshakeHandler(CC connection) {
+    ClientHandshakeHandler(CC connection) {
       super(BasicClient.this.handshakeType, BasicClient.this.handshakeParser);
       Preconditions.checkNotNull(connection);
       this.connection = connection;
@@ -321,7 +329,7 @@ public abstract class BasicClient<T extends EnumLite, CC extends ClientConnectio
 
     if (connection != null) {
       connection.close();
+      connection = null;
     }
   }
-
 }

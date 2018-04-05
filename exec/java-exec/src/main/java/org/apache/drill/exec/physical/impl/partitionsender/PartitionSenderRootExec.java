@@ -33,9 +33,10 @@ import org.apache.drill.exec.expr.ClassGenerator;
 import org.apache.drill.exec.expr.CodeGenerator;
 import org.apache.drill.exec.expr.ExpressionTreeMaterializer;
 import org.apache.drill.exec.ops.AccountingDataTunnel;
-import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.exec.ops.ExchangeFragmentContext;
 import org.apache.drill.exec.ops.MetricDef;
 import org.apache.drill.exec.ops.OperatorStats;
+import org.apache.drill.exec.ops.RootFragmentContext;
 import org.apache.drill.exec.physical.MinorFragmentEndpoint;
 import org.apache.drill.exec.physical.config.HashPartitionSender;
 import org.apache.drill.exec.physical.impl.BaseRootExec;
@@ -43,6 +44,7 @@ import org.apache.drill.exec.planner.physical.PlannerSettings;
 import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
 import org.apache.drill.exec.record.BatchSchema;
 import org.apache.drill.exec.record.BatchSchema.SelectionVectorMode;
+import org.apache.drill.exec.record.CloseableRecordBatch;
 import org.apache.drill.exec.record.FragmentWritableBatch;
 import org.apache.drill.exec.record.RecordBatch;
 import org.apache.drill.exec.record.RecordBatch.IterOutcome;
@@ -62,16 +64,16 @@ public class PartitionSenderRootExec extends BaseRootExec {
   private HashPartitionSender operator;
   private PartitionerDecorator partitioner;
 
-  private FragmentContext context;
-  private boolean ok = true;
+  private ExchangeFragmentContext context;
   private final int outGoingBatchCount;
   private final HashPartitionSender popConfig;
   private final double cost;
 
   private final AtomicIntegerArray remainingReceivers;
   private final AtomicInteger remaingReceiverCount;
-  private volatile boolean done = false;
+  private boolean done = false;
   private boolean first = true;
+  private boolean closeIncoming;
 
   long minReceiverRecordCount = Long.MAX_VALUE;
   long maxReceiverRecordCount = Long.MIN_VALUE;
@@ -96,12 +98,20 @@ public class PartitionSenderRootExec extends BaseRootExec {
     }
   }
 
-  public PartitionSenderRootExec(FragmentContext context,
+  public PartitionSenderRootExec(RootFragmentContext context,
                                  RecordBatch incoming,
                                  HashPartitionSender operator) throws OutOfMemoryException {
+    this(context, incoming, operator, false);
+  }
+
+  public PartitionSenderRootExec(RootFragmentContext context,
+                                 RecordBatch incoming,
+                                 HashPartitionSender operator,
+                                 boolean closeIncoming) throws OutOfMemoryException {
     super(context, context.newOperatorContext(operator, null), operator);
     this.incoming = incoming;
     this.operator = operator;
+    this.closeIncoming = closeIncoming;
     this.context = context;
     outGoingBatchCount = operator.getDestinations().size();
     popConfig = operator;
@@ -135,11 +145,8 @@ public class PartitionSenderRootExec extends BaseRootExec {
 
   @Override
   public boolean innerNext() {
-    if (!ok) {
-      return false;
-    }
-
     IterOutcome out;
+
     if (!done) {
       out = next(incoming);
     } else {
@@ -163,7 +170,7 @@ public class PartitionSenderRootExec extends BaseRootExec {
         } catch (IOException e) {
           incoming.kill(false);
           logger.error("Error while creating partitioning sender or flushing outgoing batches", e);
-          context.fail(e);
+          context.getExecutorState().fail(e);
         }
         return false;
 
@@ -193,19 +200,19 @@ public class PartitionSenderRootExec extends BaseRootExec {
         } catch (IOException e) {
           incoming.kill(false);
           logger.error("Error while flushing outgoing batches", e);
-          context.fail(e);
+          context.getExecutorState().fail(e);
           return false;
         } catch (SchemaChangeException e) {
           incoming.kill(false);
           logger.error("Error while setting up partitioner", e);
-          context.fail(e);
+          context.getExecutorState().fail(e);
           return false;
         }
       case OK:
         try {
           partitioner.partitionBatch(incoming);
         } catch (IOException e) {
-          context.fail(e);
+          context.getExecutorState().fail(e);
           incoming.kill(false);
           return false;
         }
@@ -241,13 +248,11 @@ public class PartitionSenderRootExec extends BaseRootExec {
             startIndex, endIndex);
       }
 
-      synchronized (this) {
-        partitioner = new PartitionerDecorator(subPartitioners, stats, context);
-        for (int index = 0; index < terminations.size(); index++) {
-          partitioner.getOutgoingBatches(terminations.buffer[index]).terminate();
-        }
-        terminations.clear();
+      partitioner = new PartitionerDecorator(subPartitioners, stats, context);
+      for (int index = 0; index < terminations.size(); index++) {
+        partitioner.getOutgoingBatches(terminations.buffer[index]).terminate();
       }
+      terminations.clear();
 
       success = true;
     } finally {
@@ -265,10 +270,10 @@ public class PartitionSenderRootExec extends BaseRootExec {
     final ErrorCollector collector = new ErrorCollectorImpl();
     final ClassGenerator<Partitioner> cg ;
 
-    cg = CodeGenerator.getRoot(Partitioner.TEMPLATE_DEFINITION, context.getFunctionRegistry(), context.getOptions());
+    cg = CodeGenerator.getRoot(Partitioner.TEMPLATE_DEFINITION, context.getOptions());
     cg.getCodeGenerator().plainJavaCapable(true);
     // Uncomment out this line to debug the generated code.
-//    cg.getCodeGenerator().saveCodeForDebugging(true);
+    // cg.getCodeGenerator().saveCodeForDebugging(true);
     ClassGenerator<Partitioner> cgInner = cg.getInnerGenerator("OutgoingRecordBatch");
 
     final LogicalExpression materializedExpr = ExpressionTreeMaterializer.materialize(expr, incoming, collector, context.getFunctionRegistry());
@@ -317,12 +322,10 @@ public class PartitionSenderRootExec extends BaseRootExec {
   public void receivingFragmentFinished(FragmentHandle handle) {
     final int id = handle.getMinorFragmentId();
     if (remainingReceivers.compareAndSet(id, 0, 1)) {
-      synchronized (this) {
-        if (partitioner == null) {
-          terminations.add(id);
-        } else {
-          partitioner.getOutgoingBatches(id).terminate();
-        }
+      if (partitioner == null) {
+        terminations.add(id);
+      } else {
+        partitioner.getOutgoingBatches(id).terminate();
       }
 
       int remaining = remaingReceiverCount.decrementAndGet();
@@ -336,14 +339,18 @@ public class PartitionSenderRootExec extends BaseRootExec {
   public void close() throws Exception {
     logger.debug("Partition sender stopping.");
     super.close();
-    ok = false;
+
     if (partitioner != null) {
       updateAggregateStats();
       partitioner.clear();
     }
+
+    if (closeIncoming) {
+      ((CloseableRecordBatch) incoming).close();
+    }
   }
 
-  public void sendEmptyBatch(boolean isLast) {
+  private void sendEmptyBatch(boolean isLast) {
     BatchSchema schema = incoming.getSchema();
     if (schema == null) {
       // If the incoming batch has no schema (possible when there are no input records),

@@ -17,11 +17,10 @@
  */
 package org.apache.drill.exec.work.batch;
 
-import static org.apache.drill.exec.rpc.RpcBus.get;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.DrillBuf;
-
-import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.common.exceptions.ExecutionSetupException;
+import org.apache.drill.exec.ops.FragmentContextImpl;
 import org.apache.drill.exec.proto.BitControl.CustomMessage;
 import org.apache.drill.exec.proto.BitControl.FinishedReceiver;
 import org.apache.drill.exec.proto.BitControl.FragmentStatus;
@@ -42,7 +41,6 @@ import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.UserRpcException;
 import org.apache.drill.exec.rpc.control.ControlConnection;
 import org.apache.drill.exec.rpc.control.ControlRpcConfig;
-import org.apache.drill.exec.rpc.control.ControlTunnel;
 import org.apache.drill.exec.rpc.control.CustomHandlerRegistry;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.work.WorkManager.WorkerBee;
@@ -51,6 +49,8 @@ import org.apache.drill.exec.work.fragment.FragmentExecutor;
 import org.apache.drill.exec.work.fragment.FragmentManager;
 import org.apache.drill.exec.work.fragment.FragmentStatusReporter;
 import org.apache.drill.exec.work.fragment.NonRootFragmentManager;
+
+import static org.apache.drill.exec.rpc.RpcBus.get;
 
 public class ControlMessageHandler implements RequestHandler<ControlConnection> {
   private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ControlMessageHandler.class);
@@ -98,9 +98,7 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
 
     case RpcType.REQ_QUERY_CANCEL_VALUE: {
       final QueryId queryId = get(pBody, QueryId.PARSER);
-      final Foreman foreman = bee.getForemanForQueryId(queryId);
-      if (foreman != null) {
-        foreman.cancel();
+      if (bee.cancelForeman(queryId, null)) {
         sender.send(ControlRpcConfig.OK);
       } else {
         sender.send(ControlRpcConfig.FAIL);
@@ -110,8 +108,9 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
 
     case RpcType.REQ_INITIALIZE_FRAGMENTS_VALUE: {
       final InitializeFragments fragments = get(pBody, InitializeFragments.PARSER);
+      final DrillbitContext drillbitContext = bee.getContext();
       for(int i = 0; i < fragments.getFragmentCount(); i++) {
-        startNewRemoteFragment(fragments.getFragment(i));
+        startNewFragment(fragments.getFragment(i), drillbitContext);
       }
       sender.send(ControlRpcConfig.OK);
       break;
@@ -140,25 +139,33 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
     }
   }
 
-  private void startNewRemoteFragment(final PlanFragment fragment) throws UserRpcException {
+  /**
+   * Start a new fragment on this node. These fragments can be leaf or intermediate fragments
+   * which are scheduled by remote or local Foreman node.
+   * @param fragment
+   * @throws UserRpcException
+   */
+  private void startNewFragment(final PlanFragment fragment, final DrillbitContext drillbitContext)
+      throws UserRpcException {
     logger.debug("Received remote fragment start instruction", fragment);
 
-    final DrillbitContext drillbitContext = bee.getContext();
     try {
+      final FragmentContextImpl fragmentContext = new FragmentContextImpl(drillbitContext, fragment,
+          drillbitContext.getFunctionImplementationRegistry());
+      final FragmentStatusReporter statusReporter = new FragmentStatusReporter(fragmentContext);
+      final FragmentExecutor fragmentExecutor = new FragmentExecutor(fragmentContext, fragment, statusReporter);
+
       // we either need to start the fragment if it is a leaf fragment, or set up a fragment manager if it is non leaf.
       if (fragment.getLeafFragment()) {
-        final FragmentContext context = new FragmentContext(drillbitContext, fragment,
-            drillbitContext.getFunctionImplementationRegistry());
-        final ControlTunnel tunnel = drillbitContext.getController().getTunnel(fragment.getForeman());
-        final FragmentStatusReporter statusReporter = new FragmentStatusReporter(context, tunnel);
-        final FragmentExecutor fr = new FragmentExecutor(context, fragment, statusReporter);
-        bee.addFragmentRunner(fr);
+        bee.addFragmentRunner(fragmentExecutor);
       } else {
         // isIntermediate, store for incoming data.
-        final NonRootFragmentManager manager = new NonRootFragmentManager(fragment, drillbitContext);
+        final NonRootFragmentManager manager = new NonRootFragmentManager(fragment, fragmentExecutor, statusReporter);
         drillbitContext.getWorkBus().addFragmentManager(manager);
       }
 
+    } catch (final ExecutionSetupException ex) {
+      throw new UserRpcException(drillbitContext.getEndpoint(), "Failed to create fragment context", ex);
     } catch (final Exception e) {
         throw new UserRpcException(drillbitContext.getEndpoint(),
             "Failure while trying to start remote fragment", e);
@@ -184,7 +191,7 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
 
     // Case 2: Cancel active intermediate fragment. Such a fragment will be in the work bus. Delegate cancel to the
     // work bus.
-    final boolean removed = bee.getContext().getWorkBus().cancelAndRemoveFragmentManagerIfExists(handle);
+    final boolean removed = bee.getContext().getWorkBus().removeFragmentManager(handle, true);
     if (removed) {
       return Acks.OK;
     }
@@ -208,7 +215,7 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
 
   private Ack resumeFragment(final FragmentHandle handle) {
     // resume a pending fragment
-    final FragmentManager manager = bee.getContext().getWorkBus().getFragmentManagerIfExists(handle);
+    final FragmentManager manager = bee.getContext().getWorkBus().getFragmentManager(handle);
     if (manager != null) {
       manager.unpause();
       return Acks.OK;
@@ -228,14 +235,12 @@ public class ControlMessageHandler implements RequestHandler<ControlConnection> 
 
   private Ack receivingFragmentFinished(final FinishedReceiver finishedReceiver) {
 
-    final FragmentManager manager =
-        bee.getContext().getWorkBus().getFragmentManagerIfExists(finishedReceiver.getSender());
+    final FragmentManager manager = bee.getContext().getWorkBus().getFragmentManager(finishedReceiver.getSender());
 
-    FragmentExecutor executor;
     if (manager != null) {
       manager.receivingFragmentFinished(finishedReceiver.getReceiver());
     } else {
-      executor = bee.getFragmentRunner(finishedReceiver.getSender());
+      final FragmentExecutor executor = bee.getFragmentRunner(finishedReceiver.getSender());
       if (executor != null) {
         executor.receivingFragmentFinished(finishedReceiver.getReceiver());
       } else {

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -52,7 +52,6 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
   private final int offset;
   private final BufferLedger ledger;
   private final BufferManager bufManager;
-  private final ByteBufAllocator alloc;
   private final boolean isEmpty;
   private volatile int length;
   private final HistoricalLog historicalLog = BaseAllocator.DEBUG ?
@@ -72,7 +71,6 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
     this.udle = byteBuf;
     this.isEmpty = isEmpty;
     this.bufManager = manager;
-    this.alloc = alloc;
     this.addr = byteBuf.memoryAddress() + offset;
     this.ledger = ledger;
     this.length = length;
@@ -81,7 +79,6 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
     if (BaseAllocator.DEBUG) {
       historicalLog.recordEvent("create()");
     }
-
   }
 
   public DrillBuf reallocIfNeeded(final int size) {
@@ -107,51 +104,14 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
     }
   }
 
+  public long addr() { return addr; }
+
   private long addr(int index) {
     return addr + index;
   }
 
-  private final void checkIndexD(int index, int fieldLength) {
-    ensureAccessible();
-    if (fieldLength < 0) {
-      throw new IllegalArgumentException("length: " + fieldLength + " (expected: >= 0)");
-    }
-    if (index < 0 || index > capacity() - fieldLength) {
-      if (BaseAllocator.DEBUG) {
-        historicalLog.logHistory(logger);
-      }
-      throw new IndexOutOfBoundsException(String.format(
-          "index: %d, length: %d (expected: range(0, %d))", index, fieldLength, capacity()));
-    }
-  }
-
-  /**
-   * Allows a function to determine whether not reading a particular string of bytes is valid.
-   *
-   * Will throw an exception if the memory is not readable for some reason. Only doesn't something in the case that
-   * AssertionUtil.BOUNDS_CHECKING_ENABLED is true.
-   *
-   * @param start
-   *          The starting position of the bytes to be read.
-   * @param end
-   *          The exclusive endpoint of the bytes to be read.
-   */
-  public void checkBytes(int start, int end) {
-    if (BoundsChecking.BOUNDS_CHECKING_ENABLED) {
-      checkIndexD(start, end - start);
-    }
-  }
-
   private void chk(int index, int width) {
-    if (BoundsChecking.BOUNDS_CHECKING_ENABLED) {
-      checkIndexD(index, width);
-    }
-  }
-
-  private void ensure(int width) {
-    if (BoundsChecking.BOUNDS_CHECKING_ENABLED) {
-      ensureWritable(width);
-    }
+    BoundsChecking.lengthCheck(this, index, width);
   }
 
   /**
@@ -184,15 +144,15 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
   /**
    * Transfer the memory accounting ownership of this DrillBuf to another allocator. This will generate a new DrillBuf
    * that carries an association with the underlying memory of this DrillBuf. If this DrillBuf is connected to the
-   * owning BufferLedger of this memory, that memory ownership/accounting will be transferred to the taret allocator. If
+   * owning BufferLedger of this memory, that memory ownership/accounting will be transferred to the target allocator. If
    * this DrillBuf does not currently own the memory underlying it (and is only associated with it), this does not
    * transfer any ownership to the newly created DrillBuf.
-   *
+   * <p>
    * This operation has no impact on the reference count of this DrillBuf. The newly created DrillBuf with either have a
    * reference count of 1 (in the case that this is the first time this memory is being associated with the new
    * allocator) or the current value of the reference count for the other AllocationManager/BufferLedger combination in
    * the case that the provided allocator already had an association to this underlying memory.
-   *
+   * <p>
    * Transfers will always succeed, even if that puts the other allocator into an overlimit situation. This is possible
    * due to the fact that the original owning allocator may have allocated this memory out of a local reservation
    * whereas the target allocator may need to allocate new memory from a parent or RootAllocator. This operation is done
@@ -218,6 +178,13 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
   }
 
   /**
+   * Visible only for memory allocation calculations.
+   *
+   * @return
+   */
+  public BufferLedger getLedger() { return ledger; }
+
+  /**
    * The outcome of a Transfer.
    */
   public class TransferResult {
@@ -236,7 +203,6 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
       this.allocationFit = allocationFit;
       this.buffer = buffer;
     }
-
   }
 
   @Override
@@ -269,9 +235,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
       throw new IllegalStateException(
           String.format("DrillBuf[%d] refCnt has gone negative. Buffer Info: %s", id, toVerboseString()));
     }
-
     return refCnt == 0;
-
   }
 
   @Override
@@ -452,7 +416,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
       return "";
     }
 
-    return ByteBufUtil.decodeString(nioBuffer(index, length), charset);
+    return ByteBufUtil.decodeString(this, index, length, charset);
   }
 
   @Override
@@ -578,7 +542,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeShort(int value) {
-    ensure(2);
+    BoundsChecking.ensureWritable(this, 2);
     PlatformDependent.putShort(addr(writerIndex), (short) value);
     writerIndex += 2;
     return this;
@@ -586,7 +550,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeInt(int value) {
-    ensure(4);
+    BoundsChecking.ensureWritable(this, 4);
     PlatformDependent.putInt(addr(writerIndex), value);
     writerIndex += 4;
     return this;
@@ -594,7 +558,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeLong(long value) {
-    ensure(8);
+    BoundsChecking.ensureWritable(this, 8);
     PlatformDependent.putLong(addr(writerIndex), value);
     writerIndex += 8;
     return this;
@@ -602,7 +566,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeChar(int value) {
-    ensure(2);
+    BoundsChecking.ensureWritable(this, 2);
     PlatformDependent.putShort(addr(writerIndex), (short) value);
     writerIndex += 2;
     return this;
@@ -610,7 +574,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeFloat(float value) {
-    ensure(4);
+    BoundsChecking.ensureWritable(this, 4);
     PlatformDependent.putInt(addr(writerIndex), Float.floatToRawIntBits(value));
     writerIndex += 4;
     return this;
@@ -618,7 +582,7 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
 
   @Override
   public ByteBuf writeDouble(double value) {
-    ensure(8);
+    BoundsChecking.ensureWritable(this, 8);
     PlatformDependent.putLong(addr(writerIndex), Double.doubleToRawLongBits(value));
     writerIndex += 8;
     return this;
@@ -859,5 +823,4 @@ public final class DrillBuf extends AbstractByteBuf implements AutoCloseable {
       historicalLog.buildHistory(sb, indent + 1, verbosity.includeStackTraces);
     }
   }
-
 }

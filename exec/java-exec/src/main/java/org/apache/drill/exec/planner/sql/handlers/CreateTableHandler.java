@@ -40,6 +40,7 @@ import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.physical.PhysicalPlan;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
+import org.apache.drill.exec.planner.sql.DirectPlan;
 import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.store.StorageStrategy;
 import org.apache.drill.exec.planner.logical.DrillRel;
@@ -70,8 +71,8 @@ public class CreateTableHandler extends DefaultSqlHandler {
 
   @Override
   public PhysicalPlan getPlan(SqlNode sqlNode) throws ValidationException, RelConversionException, IOException, ForemanSetupException {
-    SqlCreateTable sqlCreateTable = unwrap(sqlNode, SqlCreateTable.class);
-    String originalTableName = sqlCreateTable.getName();
+    final SqlCreateTable sqlCreateTable = unwrap(sqlNode, SqlCreateTable.class);
+    final String originalTableName = sqlCreateTable.getName();
 
     final ConvertedRelNode convertedRelNode = validateAndConvert(sqlCreateTable.getQuery());
     final RelDataType validatedRowType = convertedRelNode.getValidatedRowType();
@@ -82,8 +83,14 @@ public class CreateTableHandler extends DefaultSqlHandler {
 
     final DrillConfig drillConfig = context.getConfig();
     final AbstractSchema drillSchema = resolveSchema(sqlCreateTable, config.getConverter().getDefaultSchema(), drillConfig);
+    final boolean checkTableNonExistence = sqlCreateTable.checkTableNonExistence();
+    final String schemaPath = drillSchema.getFullSchemaName();
 
-    checkDuplicatedObjectExistence(drillSchema, originalTableName, drillConfig, context.getSession());
+    // Check table creation possibility
+    if(!checkTableCreationPossibility(drillSchema, originalTableName, drillConfig, context.getSession(), schemaPath, checkTableNonExistence)) {
+      return DirectPlan.createDirectPlan(context, false,
+        String.format("A table or view with given name [%s] already exists in schema [%s]", originalTableName, schemaPath));
+    }
 
     final RelNode newTblRelNodeWithPCol = SqlHandlerUtil.qualifyPartitionCol(newTblRelNode,
         sqlCreateTable.getPartitionColumns());
@@ -91,7 +98,8 @@ public class CreateTableHandler extends DefaultSqlHandler {
     log("Calcite", newTblRelNodeWithPCol, logger, null);
     // Convert the query to Drill Logical plan and insert a writer operator on top.
     StorageStrategy storageStrategy = sqlCreateTable.isTemporary() ?
-        StorageStrategy.TEMPORARY : StorageStrategy.PERSISTENT;
+        StorageStrategy.TEMPORARY :
+        new StorageStrategy(context.getOption(ExecConstants.PERSISTENT_TABLE_UMASK).string_val, false);
 
     // If we are creating temporary table, initial table name will be replaced with generated table name.
     // Generated table name is unique, UUID.randomUUID() is used for its generation.
@@ -120,7 +128,7 @@ public class CreateTableHandler extends DefaultSqlHandler {
                                  RelDataType queryRowType,
                                  StorageStrategy storageStrategy)
       throws RelConversionException, SqlUnsupportedException {
-    final DrillRel convertedRelNode = convertToDrel(relNode);
+    final DrillRel convertedRelNode = convertToRawDrel(relNode);
 
     // Put a non-trivial topProject to ensure the final output field name is preserved, when necessary.
     // Only insert project when the field count from the child is same as that of the queryRowType.
@@ -135,7 +143,7 @@ public class CreateTableHandler extends DefaultSqlHandler {
 
   private Prel convertToPrel(RelNode drel, RelDataType inputRowType, List<String> partitionColumns)
       throws RelConversionException, SqlUnsupportedException {
-    Prel prel = convertToPrel(drel);
+    Prel prel = convertToPrel(drel, inputRowType);
 
     prel = prel.accept(new ProjectForWriterVisitor(inputRowType, partitionColumns), null);
 
@@ -187,7 +195,7 @@ public class CreateTableHandler extends DefaultSqlHandler {
       final RelOptCluster cluster = prel.getCluster();
 
       final List<RexNode> exprs = Lists.newArrayListWithExpectedSize(queryRowType.getFieldCount() + 1);
-      final List<String> fieldnames = new ArrayList<String>(queryRowType.getFieldNames());
+      final List<String> fieldNames = new ArrayList<>(queryRowType.getFieldNames());
 
       for (final RelDataTypeField field : queryRowType.getFieldList()) {
         exprs.add(RexInputRef.of(field.getIndex(), queryRowType));
@@ -198,7 +206,7 @@ public class CreateTableHandler extends DefaultSqlHandler {
         final ProjectPrel projectUnderWriter = new ProjectAllowDupPrel(cluster,
             cluster.getPlanner().emptyTraitSet().plus(Prel.DRILL_PHYSICAL), child, exprs, queryRowType);
 
-        return (Prel) prel.copy(projectUnderWriter.getTraitSet(),
+        return prel.copy(projectUnderWriter.getTraitSet(),
             Collections.singletonList( (RelNode) projectUnderWriter));
       } else {
         // find list of partition columns.
@@ -216,19 +224,19 @@ public class CreateTableHandler extends DefaultSqlHandler {
         }
 
         // Add partition column comparator to Project's field name list.
-        fieldnames.add(WriterPrel.PARTITION_COMPARATOR_FIELD);
+        fieldNames.add(WriterPrel.PARTITION_COMPARATOR_FIELD);
 
         // Add partition column comparator to Project's expression list.
         final RexNode partionColComp = createPartitionColComparator(prel.getCluster().getRexBuilder(), partitionColumnExprs);
         exprs.add(partionColComp);
 
 
-        final RelDataType rowTypeWithPCComp = RexUtil.createStructType(cluster.getTypeFactory(), exprs, fieldnames);
+        final RelDataType rowTypeWithPCComp = RexUtil.createStructType(cluster.getTypeFactory(), exprs, fieldNames, null);
 
         final ProjectPrel projectUnderWriter = new ProjectAllowDupPrel(cluster,
             cluster.getPlanner().emptyTraitSet().plus(Prel.DRILL_PHYSICAL), child, exprs, rowTypeWithPCComp);
 
-        return (Prel) prel.copy(projectUnderWriter.getTraitSet(),
+        return prel.copy(projectUnderWriter.getTraitSet(),
             Collections.singletonList( (RelNode) projectUnderWriter));
       }
     }
@@ -288,28 +296,36 @@ public class CreateTableHandler extends DefaultSqlHandler {
   }
 
   /**
-   * Checks if any object (persistent table / temporary table / view)
-   * with the same name as table to be created exists in indicated schema.
+   * Validates if table can be created in indicated schema
+   * Checks if any object (persistent table / temporary table / view) with the same name exists
+   * or if object with the same name exists but if not exists flag is set.
    *
    * @param drillSchema schema where table will be created
    * @param tableName table name
    * @param config drill config
    * @param userSession current user session
-   * @throws UserException if duplicate is found
+   * @param schemaPath schema path
+   * @param checkTableNonExistence whether duplicate check is requested
+   * @return if duplicate found in indicated schema
+   * @throws UserException if duplicate found in indicated schema and no duplicate check requested
    */
-  private void checkDuplicatedObjectExistence(AbstractSchema drillSchema,
+  private boolean checkTableCreationPossibility(AbstractSchema drillSchema,
                                               String tableName,
                                               DrillConfig config,
-                                              UserSession userSession) {
-    String schemaPath = drillSchema.getFullSchemaName();
+                                              UserSession userSession,
+                                              String schemaPath,
+                                              boolean checkTableNonExistence) {
     boolean isTemporaryTable = userSession.isTemporaryTable(drillSchema, config, tableName);
 
     if (isTemporaryTable || SqlHandlerUtil.getTableFromSchema(drillSchema, tableName) != null) {
-      throw UserException
-          .validationError()
-          .message("A table or view with given name [%s] already exists in schema [%s]",
-              tableName, schemaPath)
+      if (checkTableNonExistence) {
+        return false;
+      } else {
+        throw UserException.validationError()
+          .message("A table or view with given name [%s] already exists in schema [%s]", tableName, schemaPath)
           .build(logger);
+      }
     }
+    return true;
   }
 }

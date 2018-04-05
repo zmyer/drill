@@ -58,7 +58,7 @@ public abstract class MSortTemplate implements MSorter, IndexedSortable {
 
   @Override
   public void setup(final FragmentContext context, final BufferAllocator allocator, final SelectionVector4 vector4,
-                    final VectorContainer hyperBatch, int outputBatchSize) throws SchemaChangeException{
+                    final VectorContainer hyperBatch, int outputBatchSize, int desiredBatchSize) throws SchemaChangeException{
     // we pass in the local hyperBatch since that is where we'll be reading data.
     Preconditions.checkNotNull(vector4);
     this.vector4 = vector4.createNewWrapperCurrent();
@@ -89,7 +89,7 @@ public abstract class MSortTemplate implements MSorter, IndexedSortable {
 
     @SuppressWarnings("resource")
     final DrillBuf drillBuf = allocator.buffer(4 * totalCount);
-    desiredRecordBatchCount = Math.min(outputBatchSize, Character.MAX_VALUE);
+    desiredRecordBatchCount = Math.min(outputBatchSize, desiredBatchSize);
     desiredRecordBatchCount = Math.min(desiredRecordBatchCount, totalCount);
     aux = new SelectionVector4(drillBuf, totalCount, desiredRecordBatchCount);
   }
@@ -147,7 +147,7 @@ public abstract class MSortTemplate implements MSorter, IndexedSortable {
   }
 
   /**
-   * Sort (really, merge) a set of pre-sorted runs to produce a combined
+   * Merge a set of pre-sorted runs to produce a combined
    * result set. Merging is done in the selection vector, record data does
    * not move.
    * <p>
@@ -157,12 +157,12 @@ public abstract class MSortTemplate implements MSorter, IndexedSortable {
    */
 
   @Override
-  public void sort(final VectorContainer container) {
+  public void sort() {
     while (runStarts.size() > 1) {
       final int totalCount = this.vector4.getTotalCount();
 
       // check if we're cancelled/failed recently
-      if (!context.shouldContinue()) {
+      if (!context.getExecutorState().shouldContinue()) {
         return; }
 
       int outIndex = 0;
@@ -223,15 +223,21 @@ public abstract class MSortTemplate implements MSorter, IndexedSortable {
 
   @Override
   public void clear() {
-    if(vector4 != null) {
+    if (vector4 != null) {
       vector4.clear();
+      vector4 = null;
     }
-
-    if(aux != null) {
+    if (aux != null) {
       aux.clear();
+      aux = null;
     }
   }
 
-  public abstract void doSetup(@Named("context") FragmentContext context, @Named("incoming") VectorContainer incoming, @Named("outgoing") RecordBatch outgoing) throws SchemaChangeException;
-  public abstract int doEval(@Named("leftIndex") int leftIndex, @Named("rightIndex") int rightIndex) throws SchemaChangeException;
+  public abstract void doSetup(@Named("context") FragmentContext context,
+                               @Named("incoming") VectorContainer incoming,
+                               @Named("outgoing") RecordBatch outgoing)
+                       throws SchemaChangeException;
+  public abstract int doEval(@Named("leftIndex") int leftIndex,
+                             @Named("rightIndex") int rightIndex)
+                      throws SchemaChangeException;
 }

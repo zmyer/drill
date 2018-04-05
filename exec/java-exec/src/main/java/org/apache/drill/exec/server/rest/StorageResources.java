@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -93,6 +93,7 @@ public class StorageResources {
     return ViewableWithPermissions.create(authEnabled.get(), "/rest/storage/list.ftl", sc, list);
   }
 
+  @SuppressWarnings("resource")
   @GET
   @Path("/storage/{name}.json")
   @Produces(MediaType.APPLICATION_JSON)
@@ -161,8 +162,8 @@ public class StorageResources {
       plugin.createOrUpdateInStorage(storage);
       return message("success");
     } catch (ExecutionSetupException e) {
-      logger.debug("Unable to create/ update plugin: " + plugin.getName());
-      return message("error (unable to create/ update storage)");
+      logger.error("Unable to create/ update plugin: " + plugin.getName(), e);
+      return message("Error while creating/ updating storage : " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
     }
   }
 

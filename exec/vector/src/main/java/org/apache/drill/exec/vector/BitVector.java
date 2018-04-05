@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -39,6 +39,38 @@ import org.apache.drill.exec.vector.complex.reader.FieldReader;
 public final class BitVector extends BaseDataValueVector implements FixedWidthVector {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(BitVector.class);
 
+  /**
+   * Width of each fixed-width value.
+   */
+
+  public static final int VALUE_WIDTH = 1;
+
+  /**
+   * Maximum number of values that this fixed-width vector can hold
+   * and stay below the maximum vector size limit. This is the limit
+   * enforced when the vector is used to hold values in a repeated
+   * vector.
+   */
+
+  public static final int MAX_CAPACITY = MAX_BUFFER_SIZE / VALUE_WIDTH;
+
+  /**
+   * Maximum number of values that this fixed-width vector can hold
+   * and stay below the maximum vector size limit and/or stay below
+   * the maximum item count. This lis the limit enforced when the
+   * vector is used to hold required or nullable values.
+   */
+
+  public static final int MAX_COUNT = Math.min(MAX_ROW_COUNT, MAX_CAPACITY);
+
+  /**
+   * Actual maximum vector size, in bytes, given the number of fixed-width
+   * values that either fit in the maximum overall vector size, or that
+   * is no larger than the maximum vector item count.
+   */
+
+  public static final int NET_MAX_SIZE = VALUE_WIDTH * MAX_COUNT;
+
   private final FieldReader reader = new BitReaderImpl(BitVector.this);
   private final Accessor accessor = new Accessor();
   private final Mutator mutator = new Mutator();
@@ -72,7 +104,7 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
 
   @Override
   public int getValueCapacity() {
-    return (int)Math.min((long)Integer.MAX_VALUE, data.capacity() * 8L);
+    return (int) Math.min((long)Integer.MAX_VALUE, data.capacity() * 8L);
   }
 
   private int getByteIndex(int index) {
@@ -161,6 +193,16 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
     allocationSizeInBytes = curSize;
   }
 
+  // This version uses the base version because this vector appears to not be
+  // used, so not worth the effort to avoid zero-fill.
+
+  public DrillBuf reallocRaw(int newAllocationSize) {
+    while (allocationSizeInBytes < newAllocationSize) {
+      reAlloc();
+    }
+    return data;
+  }
+
   /**
    * {@inheritDoc}
    */
@@ -183,8 +225,14 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
   }
 
   @Override
+  public void copyEntry(int toIndex, ValueVector from, int fromIndex) {
+    copyFrom(fromIndex, toIndex, (BitVector) from);
+  }
+
+  @Override
   public void load(SerializedField metadata, DrillBuf buffer) {
-    Preconditions.checkArgument(this.field.getPath().equals(metadata.getNamePart().getName()), "The field %s doesn't match the provided metadata %s.", this.field, metadata);
+    Preconditions.checkArgument(this.field.getName().equals(metadata.getNamePart().getName()),
+                                "The field %s doesn't match the provided metadata %s.", this.field, metadata);
     final int valueCount = metadata.getValueCount();
     final int expectedLength = getSizeFromCount(valueCount);
     final int actualLength = metadata.getBufferLength();
@@ -221,7 +269,6 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
     return new TransferImpl((BitVector) to);
   }
 
-
   public void transferTo(BitVector target) {
     target.clear();
     if (target.data != null) {
@@ -244,7 +291,7 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
       if (target.data != null) {
         target.data.release();
       }
-      target.data = (DrillBuf) data.slice(firstByte, byteSize);
+      target.data = data.slice(firstByte, byteSize);
       target.data.retain(1);
     } else {
       // Copy data
@@ -335,7 +382,7 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
 
     @Override
     public final Boolean getObject(int index) {
-      return new Boolean(get(index) != 0);
+      return Boolean.valueOf(get(index) != 0);
     }
 
     @Override
@@ -441,7 +488,6 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
       }
       setValueCount(values);
     }
-
   }
 
   @Override
@@ -451,8 +497,13 @@ public final class BitVector extends BaseDataValueVector implements FixedWidthVe
   }
 
   @Override
-  public int getPayloadByteCount() {
-    // One byte per value
-    return valueCount;
+  public int getPayloadByteCount(int valueCount) {
+    return getSizeFromCount(valueCount);
+  }
+
+  @Override
+  public void toNullable(ValueVector nullableVector) {
+    NullableBitVector dest = (NullableBitVector) nullableVector;
+    dest.getMutator().fromNotNullable(this);
   }
 }

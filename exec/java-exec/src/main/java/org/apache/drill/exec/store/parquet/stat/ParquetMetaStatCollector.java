@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,6 +24,7 @@ import org.apache.drill.common.types.Types;
 import org.apache.drill.exec.store.parquet.Metadata;
 import org.apache.drill.exec.store.parquet.ParquetGroupScan;
 import org.apache.parquet.column.statistics.BinaryStatistics;
+import org.apache.parquet.column.statistics.BooleanStatistics;
 import org.apache.parquet.column.statistics.DoubleStatistics;
 import org.apache.parquet.column.statistics.FloatStatistics;
 import org.apache.parquet.column.statistics.IntStatistics;
@@ -40,11 +41,11 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public class ParquetMetaStatCollector implements  ColumnStatCollector{
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ParquetMetaStatCollector.class);
+  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ParquetMetaStatCollector.class);
 
-  private  final Metadata.ParquetTableMetadataBase parquetTableMetadata;
-  private  final List<? extends Metadata.ColumnMetadata> columnMetadataList;
-  final Map<String, String> implicitColValues;
+  private final Metadata.ParquetTableMetadataBase parquetTableMetadata;
+  private final List<? extends Metadata.ColumnMetadata> columnMetadataList;
+  private final Map<String, String> implicitColValues;
 
   public ParquetMetaStatCollector(Metadata.ParquetTableMetadataBase parquetTableMetadata,
       List<? extends Metadata.ColumnMetadata> columnMetadataList, Map<String, String> implicitColValues) {
@@ -81,11 +82,11 @@ public class ParquetMetaStatCollector implements  ColumnStatCollector{
       columnMetadataMap.put(schemaPath, columnMetadata);
     }
 
-    for (final SchemaPath schemaPath : fields) {
+    for (final SchemaPath field : fields) {
       final PrimitiveType.PrimitiveTypeName primitiveType;
       final OriginalType originalType;
 
-      final Metadata.ColumnMetadata columnMetadata = columnMetadataMap.get(schemaPath);
+      final Metadata.ColumnMetadata columnMetadata = columnMetadataMap.get(field.getUnIndexed());
 
       if (columnMetadata != null) {
         final Object min = columnMetadata.getMinValue();
@@ -94,18 +95,26 @@ public class ParquetMetaStatCollector implements  ColumnStatCollector{
 
         primitiveType = this.parquetTableMetadata.getPrimitiveType(columnMetadata.getName());
         originalType = this.parquetTableMetadata.getOriginalType(columnMetadata.getName());
-        final Integer repetitionLevel = this.parquetTableMetadata.getRepetitionLevel(columnMetadata.getName());
+        int precision = 0;
+        int scale = 0;
+        // ColumnTypeMetadata_v3 stores information about scale and precision
+        if (parquetTableMetadata instanceof Metadata.ParquetTableMetadata_v3) {
+          Metadata.ColumnTypeMetadata_v3 columnTypeInfo = ((Metadata.ParquetTableMetadata_v3) parquetTableMetadata)
+                                                                          .getColumnTypeInfo(columnMetadata.getName());
+          scale = columnTypeInfo.scale;
+          precision = columnTypeInfo.precision;
+        }
 
-        statMap.put(schemaPath, getStat(min, max, numNull, primitiveType, originalType, repetitionLevel));
+        statMap.put(field, getStat(min, max, numNull, primitiveType, originalType, scale, precision));
       } else {
-        final String columnName = schemaPath.getRootSegment().getPath();
+        final String columnName = field.getRootSegment().getPath();
         if (implicitColValues.containsKey(columnName)) {
           TypeProtos.MajorType type = Types.required(TypeProtos.MinorType.VARCHAR);
           Statistics stat = new BinaryStatistics();
           stat.setNumNulls(0);
           byte[] val = implicitColValues.get(columnName).getBytes();
           stat.setMinMaxFromBytes(val, val);
-          statMap.put(schemaPath, new ColumnStatistics(stat, type));
+          statMap.put(field, new ColumnStatistics(stat, type));
         }
       }
     }
@@ -117,20 +126,29 @@ public class ParquetMetaStatCollector implements  ColumnStatCollector{
     return statMap;
   }
 
+  /**
+   * Builds column statistics using given primitiveType, originalType, scale,
+   * precision, numNull, min and max values.
+   *
+   * @param min             min value for statistics
+   * @param max             max value for statistics
+   * @param numNull         num_nulls for statistics
+   * @param primitiveType   type that determines statistics class
+   * @param originalType    type that determines statistics class
+   * @param scale           scale value (used for DECIMAL type)
+   * @param precision       precision value (used for DECIMAL type)
+   * @return column statistics
+   */
   private ColumnStatistics getStat(Object min, Object max, Long numNull,
-      PrimitiveType.PrimitiveTypeName primitiveType, OriginalType originalType, Integer repetitionLevel) {
+                                   PrimitiveType.PrimitiveTypeName primitiveType, OriginalType originalType,
+                                   int scale, int precision) {
     Statistics stat = Statistics.getStatsBasedOnType(primitiveType);
     Statistics convertedStat = stat;
 
-    TypeProtos.MajorType type = ParquetGroupScan.getType(primitiveType, originalType);
-
-    // Change to repeated if repetitionLevel > 0
-    if (repetitionLevel != null && repetitionLevel > 0) {
-      type = TypeProtos.MajorType.newBuilder().setMinorType(type.getMinorType()).setMode(TypeProtos.DataMode.REPEATED).build();
-    }
+    TypeProtos.MajorType type = ParquetGroupScan.getType(primitiveType, originalType, scale, precision);
 
     if (numNull != null) {
-      stat.setNumNulls(numNull.longValue());
+      stat.setNumNulls(numNull);
     }
 
     if (min != null && max != null ) {
@@ -155,6 +173,9 @@ public class ParquetMetaStatCollector implements  ColumnStatCollector{
         final long minMS = convertToDrillDateValue(Integer.parseInt(min.toString()));
         final long maxMS = convertToDrillDateValue(Integer.parseInt(max.toString()));
         ((LongStatistics) convertedStat ).setMinMax(minMS, maxMS);
+        break;
+      case BIT:
+        ((BooleanStatistics) stat).setMinMax(Boolean.parseBoolean(min.toString()), Boolean.parseBoolean(max.toString()));
         break;
       default:
       }

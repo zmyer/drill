@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,6 +17,7 @@
  */
 package org.apache.drill.exec.store.ischema;
 
+import static org.apache.drill.exec.planner.types.DrillRelDataTypeSystem.DRILL_REL_DATATYPE_SYSTEM;
 import static org.apache.drill.exec.store.ischema.InfoSchemaConstants.CATS_COL_CATALOG_NAME;
 import static org.apache.drill.exec.store.ischema.InfoSchemaConstants.COLS_COL_COLUMN_NAME;
 import static org.apache.drill.exec.store.ischema.InfoSchemaConstants.IS_CATALOG_CONNECT;
@@ -231,7 +232,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
       // Visit the table, and if requested ...
       if(shouldVisitTable(schemaPath, tableName, tableType) && visitTable(schemaPath, tableName, table)) {
         // ... do for each of the table's fields.
-        final RelDataType tableRow = table.getRowType(new JavaTypeFactoryImpl());
+        final RelDataType tableRow = table.getRowType(new JavaTypeFactoryImpl(DRILL_REL_DATATYPE_SYSTEM));
         for (RelDataTypeField field: tableRow.getFieldList()) {
           if (shouldVisitColumn(schemaPath, tableName, field.getName())) {
             visitField(schemaPath, tableName, field);
@@ -250,7 +251,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
 
     @Override
     public PojoRecordReader<Records.Catalog> getRecordReader() {
-      return new PojoRecordReader<>(Records.Catalog.class, records.iterator());
+      return new PojoRecordReader<>(Records.Catalog.class, records);
     }
 
     @Override
@@ -269,7 +270,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
 
     @Override
     public PojoRecordReader<Records.Schema> getRecordReader() {
-      return new PojoRecordReader<>(Records.Schema.class, records.iterator());
+      return new PojoRecordReader<>(Records.Schema.class, records);
     }
 
     @Override
@@ -290,7 +291,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
 
     @Override
     public PojoRecordReader<Records.Table> getRecordReader() {
-      return new PojoRecordReader<>(Records.Table.class, records.iterator());
+      return new PojoRecordReader<>(Records.Table.class, records);
     }
 
     @Override
@@ -341,7 +342,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
 
     @Override
     public PojoRecordReader<Records.View> getRecordReader() {
-      return new PojoRecordReader<>(Records.View.class, records.iterator());
+      return new PojoRecordReader<>(Records.View.class, records);
     }
 
     @Override
@@ -362,7 +363,7 @@ public abstract class InfoSchemaRecordGenerator<S> {
 
     @Override
     public PojoRecordReader<Records.Column> getRecordReader() {
-      return new PojoRecordReader<>(Records.Column.class, records.iterator());
+      return new PojoRecordReader<>(Records.Column.class, records);
     }
 
     @Override

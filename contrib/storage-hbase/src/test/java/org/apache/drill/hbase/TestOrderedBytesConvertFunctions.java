@@ -25,7 +25,9 @@ import static org.junit.Assert.fail;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.drill.BaseTestQuery;
+import org.apache.drill.test.BaseTestQuery;
+import org.apache.drill.categories.HbaseStorageTest;
+import org.apache.drill.categories.SlowTest;
 import org.apache.drill.exec.proto.UserBitShared.QueryType;
 import org.apache.drill.exec.record.RecordBatchLoader;
 import org.apache.drill.exec.rpc.user.QueryDataBatch;
@@ -35,7 +37,9 @@ import org.junit.Test;
 
 import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
+import org.junit.experimental.categories.Category;
 
+@Category({SlowTest.class, HbaseStorageTest.class})
 public class TestOrderedBytesConvertFunctions extends BaseTestQuery {
 
   private static final String CONVERSION_TEST_PHYSICAL_PLAN = "functions/conv/conversionTestWithPhysicalPlan.json";
@@ -50,7 +54,7 @@ public class TestOrderedBytesConvertFunctions extends BaseTestQuery {
 
   @Test
   public void testOrderedBytesDoubleConvertFrom() throws Throwable {
-    verifyPhysicalPlan("convert_from(binary_string('\\x31\\x80\\x00\\x00\\x00\\x00\\x00\\x00\\x01'), 'DOUBLE_OB')", new Double(4.9e-324));
+    verifyPhysicalPlan("convert_from(binary_string('\\x31\\x80\\x00\\x00\\x00\\x00\\x00\\x00\\x01'), 'DOUBLE_OB')", Double.valueOf(4.9e-324));
   }
 
   protected <T> void verifyPhysicalPlan(String expression, T expectedResults) throws Throwable {

@@ -42,9 +42,7 @@ import org.apache.drill.exec.vector.ValueVector;
 
 import com.google.common.collect.Lists;
 
-public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter>{
-  //private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(FilterRecordBatch.class);
-
+public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter> {
   private SelectionVector2 sv2;
   private SelectionVector4 sv4;
   private Filterer filter;
@@ -120,16 +118,7 @@ public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter>{
          * logic that handles SV4 + filter should always be pushed beyond sort so disabling
          * it in FilterPrel.
          *
-
-        // set up the multi-batch selection vector
-        this.svAllocator = oContext.getAllocator().getNewPreAllocator();
-        if (!svAllocator.preAllocate(incoming.getRecordCount()*4))
-          throw new SchemaChangeException("Attempted to filter an SV4 which exceeds allowed memory (" +
-                                          incoming.getRecordCount() * 4 + " bytes)");
-        sv4 = new SelectionVector4(svAllocator.getAllocation(), incoming.getRecordCount(), Character.MAX_VALUE);
-        this.filter = generateSV4Filterer();
-        break;
-        */
+         */
       default:
         throw new UnsupportedOperationException();
     }
@@ -144,7 +133,7 @@ public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter>{
   protected Filterer generateSV4Filterer() throws SchemaChangeException {
     final ErrorCollector collector = new ErrorCollectorImpl();
     final List<TransferPair> transfers = Lists.newArrayList();
-    final ClassGenerator<Filterer> cg = CodeGenerator.getRoot(Filterer.TEMPLATE_DEFINITION4, context.getFunctionRegistry(), context.getOptions());
+    final ClassGenerator<Filterer> cg = CodeGenerator.getRoot(Filterer.TEMPLATE_DEFINITION4, context.getOptions());
 
     final LogicalExpression expr = ExpressionTreeMaterializer.materialize(popConfig.getExpr(), incoming, collector, context.getFunctionRegistry());
     if (collector.hasErrors()) {
@@ -178,7 +167,7 @@ public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter>{
   protected Filterer generateSV2Filterer() throws SchemaChangeException {
     final ErrorCollector collector = new ErrorCollectorImpl();
     final List<TransferPair> transfers = Lists.newArrayList();
-    final ClassGenerator<Filterer> cg = CodeGenerator.getRoot(Filterer.TEMPLATE_DEFINITION2, context.getFunctionRegistry(), context.getOptions());
+    final ClassGenerator<Filterer> cg = CodeGenerator.getRoot(Filterer.TEMPLATE_DEFINITION2, context.getOptions());
 
     final LogicalExpression expr = ExpressionTreeMaterializer.materialize(popConfig.getExpr(), incoming, collector,
             context.getFunctionRegistry(), false, unionTypeEnabled);
@@ -197,8 +186,6 @@ public class FilterRecordBatch extends AbstractSingleRecordBatch<Filter>{
       final TransferPair[] tx = transfers.toArray(new TransferPair[transfers.size()]);
       CodeGenerator<Filterer> codeGen = cg.getCodeGenerator();
       codeGen.plainJavaCapable(true);
-      // Uncomment out this line to debug the generated code.
-//    cg.saveCodeForDebugging(true);
       final Filterer filter = context.getImplementationClass(codeGen);
       filter.setup(context, incoming, this, tx);
       return filter;

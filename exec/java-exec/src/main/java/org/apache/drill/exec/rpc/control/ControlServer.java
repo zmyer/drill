@@ -17,10 +17,10 @@
  */
 package org.apache.drill.exec.rpc.control;
 
+import com.google.protobuf.MessageLite;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.util.concurrent.GenericFutureListener;
-
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.proto.BitControl.BitControlHandshake;
 import org.apache.drill.exec.proto.BitControl.RpcType;
@@ -29,8 +29,6 @@ import org.apache.drill.exec.rpc.OutOfMemoryHandler;
 import org.apache.drill.exec.rpc.ProtobufLengthDecoder;
 import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.security.ServerAuthenticationHandler;
-
-import com.google.protobuf.MessageLite;
 
 public class ControlServer extends BasicServer<RpcType, ControlConnection>{
 //  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(ControlServer.class);
@@ -62,12 +60,18 @@ public class ControlServer extends BasicServer<RpcType, ControlConnection>{
   @Override
   protected ControlConnection initRemoteConnection(SocketChannel channel) {
     super.initRemoteConnection(channel);
-    return new ControlConnection(channel, "control server", config,
+    final ControlConnection controlConnection = new ControlConnection(channel, "control server", config,
         config.getAuthMechanismToUse() == null
             ? config.getMessageHandler()
             : new ServerAuthenticationHandler<>(config.getMessageHandler(),
             RpcType.SASL_MESSAGE_VALUE, RpcType.SASL_MESSAGE),
         this);
+
+    // Increase the connection count here since at this point it means that we already have the TCP connection.
+    // Later when connection fails for any reason then we will decrease the counter based on Netty's connection close
+    // handler.
+    controlConnection.incConnectionCounter();
+    return controlConnection;
   }
 
 
@@ -105,6 +109,7 @@ public class ControlServer extends BasicServer<RpcType, ControlConnection>{
         if (config.getAuthMechanismToUse() != null) {
           builder.addAllAuthenticationMechanisms(config.getAuthProvider().getAllFactoryNames());
         }
+
         return builder.build();
       }
 

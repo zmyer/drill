@@ -32,7 +32,7 @@ import org.apache.drill.exec.proto.UserProtos.QueryPlanFragments;
 import org.apache.drill.exec.proto.UserProtos.RunQuery;
 import org.apache.drill.exec.rpc.Acks;
 import org.apache.drill.exec.rpc.ResponseSender;
-import org.apache.drill.exec.rpc.user.UserServer.UserClientConnection;
+import org.apache.drill.exec.rpc.UserClientConnection;
 import org.apache.drill.exec.rpc.user.UserSession;
 import org.apache.drill.exec.rpc.user.UserSession.QueryCountIncrementer;
 import org.apache.drill.exec.server.options.OptionManager;
@@ -81,10 +81,7 @@ public class UserWorker{
   }
 
   public Ack cancelQuery(QueryId query) {
-    Foreman foreman = bee.getForemanForQueryId(query);
-    if(foreman != null) {
-      foreman.cancel();
-    }
+    bee.cancelForeman(query, null);
     return Acks.OK;
   }
 

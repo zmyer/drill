@@ -32,9 +32,9 @@ import org.apache.drill.exec.exception.StoreException;
 import org.apache.drill.exec.exception.VersionMismatchException;
 import org.apache.drill.exec.proto.SchemaUserBitShared;
 import org.apache.drill.exec.proto.UserBitShared.Registry;
-import org.apache.drill.exec.store.sys.PersistentStore;
 import org.apache.drill.exec.store.sys.PersistentStoreConfig;
 import org.apache.drill.exec.store.sys.PersistentStoreProvider;
+import org.apache.drill.exec.store.sys.VersionedPersistentStore;
 import org.apache.drill.exec.store.sys.store.DataChangeVersion;
 import org.apache.drill.exec.util.ImpersonationUtil;
 import org.apache.hadoop.conf.Configuration;
@@ -92,7 +92,7 @@ public class RemoteFunctionRegistry implements AutoCloseable {
   private Path stagingArea;
   private Path tmpArea;
 
-  private PersistentStore<Registry> registry;
+  private VersionedPersistentStore<Registry> registry;
   private TransientStore<String> unregistration;
   private TransientStore<String> jars;
 
@@ -127,6 +127,14 @@ public class RemoteFunctionRegistry implements AutoCloseable {
       return -1;
     }
   }
+
+  /**
+   * Report whether a remote registry exists. During some unit tests,
+   * no remote registry exists, so the other methods should not be called.
+   * @return true if a remote registry exists, false if this a local-only
+   * instance and no such registry exists
+   */
+  public boolean hasRegistry() { return registry != null; }
 
   public Registry getRegistry(DataChangeVersion version) {
     return registry.get(registry_path, version);
@@ -184,7 +192,7 @@ public class RemoteFunctionRegistry implements AutoCloseable {
           .name("udf")
           .persist()
           .build();
-      registry = storeProvider.getOrCreateStore(registrationConfig);
+      registry = storeProvider.getOrCreateVersionedStore(registrationConfig);
       registry.putIfAbsent(registry_path, Registry.getDefaultInstance());
     } catch (StoreException e) {
       throw new DrillRuntimeException("Failure while loading remote registry.", e);

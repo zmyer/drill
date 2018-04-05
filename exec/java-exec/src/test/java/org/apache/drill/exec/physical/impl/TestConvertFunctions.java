@@ -17,8 +17,8 @@
  */
 package org.apache.drill.exec.physical.impl;
 
-import static org.apache.drill.TestBuilder.listOf;
-import static org.apache.drill.TestBuilder.mapOf;
+import static org.apache.drill.test.TestBuilder.listOf;
+import static org.apache.drill.test.TestBuilder.mapOf;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -28,8 +28,9 @@ import static org.junit.Assert.fail;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.drill.BaseTestQuery;
-import org.apache.drill.QueryTestUtil;
+import org.apache.drill.test.BaseTestQuery;
+import org.apache.drill.test.QueryTestUtil;
+import org.apache.drill.categories.UnlikelyTest;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.compile.ClassTransformer.ScalarReplacementOption;
 import org.apache.drill.exec.compile.CodeCompiler;
@@ -38,8 +39,6 @@ import org.apache.drill.exec.proto.UserBitShared.QueryType;
 import org.apache.drill.exec.record.RecordBatchLoader;
 import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.user.QueryDataBatch;
-import org.apache.drill.exec.rpc.user.UserServer;
-import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.server.options.OptionValue;
 import org.apache.drill.exec.util.ByteBufUtil.HadoopWritables;
 import org.apache.drill.exec.util.VectorUtil;
@@ -54,11 +53,10 @@ import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
 
 import io.netty.buffer.DrillBuf;
-import mockit.Injectable;
+import org.junit.experimental.categories.Category;
 
+@Category(UnlikelyTest.class)
 public class TestConvertFunctions extends BaseTestQuery {
-//  private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(TestConvertFunctions.class);
-
   private static final String CONVERSION_TEST_LOGICAL_PLAN = "functions/conv/conversionTestWithLogicalPlan.json";
   private static final String CONVERSION_TEST_PHYSICAL_PLAN = "functions/conv/conversionTestWithPhysicalPlan.json";
 
@@ -95,19 +93,15 @@ public class TestConvertFunctions extends BaseTestQuery {
     final OptionValue srOption = QueryTestUtil.setupScalarReplacementOption(bits[0], ScalarReplacementOption.OFF);
     try {
       final String newTblName = "testConvertFromConvertToInt_tbl";
-      final String ctasQuery = String.format("CREATE TABLE %s.%s as \n" +
-          "SELECT convert_to(r_regionkey, 'INT') as ct \n" +
-          "FROM cp.`tpch/region.parquet`",
-          TEMP_SCHEMA, newTblName);
-      final String query = String.format("SELECT convert_from(ct, 'INT') as cf \n" +
-          "FROM %s.%s \n" +
-          "ORDER BY ct",
-          TEMP_SCHEMA, newTblName);
 
       test("alter session set `planner.slice_target` = 1");
-      test(ctasQuery);
+      test("CREATE TABLE dfs.%s as \n" +
+        "SELECT convert_to(r_regionkey, 'INT') as ct \n" +
+        "FROM cp.`tpch/region.parquet`", newTblName);
       testBuilder()
-          .sqlQuery(query)
+          .sqlQuery("SELECT convert_from(ct, 'INT') as cf \n" +
+            "FROM dfs.%s \n" +
+            "ORDER BY ct", newTblName)
           .ordered()
           .baselineColumns("cf")
           .baselineValues(0)
@@ -119,7 +113,7 @@ public class TestConvertFunctions extends BaseTestQuery {
           .run();
     } finally {
       // restore the system option
-      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption);
+      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption.string_val);
       test("alter session set `planner.slice_target` = " + ExecConstants.SLICE_TARGET_DEFAULT);
     }
   }
@@ -129,7 +123,7 @@ public class TestConvertFunctions extends BaseTestQuery {
 
     String listStr = "[ 4, 6 ]";
     testBuilder()
-        .sqlQuery("select cast(convert_to(rl[1], 'JSON') as varchar(100)) as json_str from cp.`/store/json/input2.json`")
+        .sqlQuery("select cast(convert_to(rl[1], 'JSON') as varchar(100)) as json_str from cp.`store/json/input2.json`")
         .unOrdered()
         .baselineColumns("json_str")
         .baselineValues(listStr)
@@ -140,7 +134,7 @@ public class TestConvertFunctions extends BaseTestQuery {
 
     Object listVal = listOf(4l, 6l);
     testBuilder()
-        .sqlQuery("select convert_from(convert_to(rl[1], 'JSON'), 'JSON') list_col from cp.`/store/json/input2.json`")
+        .sqlQuery("select convert_from(convert_to(rl[1], 'JSON'), 'JSON') list_col from cp.`store/json/input2.json`")
         .unOrdered()
         .baselineColumns("list_col")
         .baselineValues(listVal)
@@ -152,7 +146,7 @@ public class TestConvertFunctions extends BaseTestQuery {
     Object mapVal1 = mapOf("f1", 4l, "f2", 6l);
     Object mapVal2 = mapOf("f1", 11l);
     testBuilder()
-        .sqlQuery("select convert_from(convert_to(rl[1], 'JSON'), 'JSON') as map_col from cp.`/store/json/json_project_null_object_from_list.json`")
+        .sqlQuery("select convert_from(convert_to(rl[1], 'JSON'), 'JSON') as map_col from cp.`store/json/json_project_null_object_from_list.json`")
         .unOrdered()
         .baselineColumns("map_col")
         .baselineValues(mapVal1)
@@ -168,10 +162,10 @@ public class TestConvertFunctions extends BaseTestQuery {
     Object mapVal2 = mapOf("y", "bill", "z", "peter");
 
     // right side of union-all produces 0 rows due to FALSE filter, column t.x is a map
-    String query1 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+    String query1 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " where t.`integer` = 2010 "
         + " union all "
-        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t"
+        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t"
         + " where 1 = 0");
 
     testBuilder()
@@ -182,10 +176,10 @@ public class TestConvertFunctions extends BaseTestQuery {
         .go();
 
     // left side of union-all produces 0 rows due to FALSE filter, column t.x is a map
-    String query2 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+    String query2 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " where 1 = 0 "
         + " union all "
-        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " where t.`integer` = 2010");
 
     testBuilder()
@@ -196,10 +190,10 @@ public class TestConvertFunctions extends BaseTestQuery {
         .go();
 
     // sanity test where neither side produces 0 rows
-    String query3 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+    String query3 = String.format("select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " where t.`integer` = 2010 "
         + " union all "
-        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+        + " select 'abc' as col1, convert_from(convert_to(t.x, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " where t.`integer` = 2001");
 
     testBuilder()
@@ -214,9 +208,9 @@ public class TestConvertFunctions extends BaseTestQuery {
     Object listVal1 = listOf(listOf(2l, 1l), listOf(4l, 6l));
     Object listVal2 = listOf(); // empty
 
-    String query4 = String.format("select 'abc' as col1, convert_from(convert_to(t.rl, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t "
+    String query4 = String.format("select 'abc' as col1, convert_from(convert_to(t.rl, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t "
         + " union all "
-        + " select 'abc' as col1, convert_from(convert_to(t.rl, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`/store/json/input2.json` t"
+        + " select 'abc' as col1, convert_from(convert_to(t.rl, 'JSON'), 'JSON') as col2, 'xyz' as col3 from cp.`store/json/input2.json` t"
         + " where 1 = 0");
 
     testBuilder()
@@ -235,12 +229,10 @@ public class TestConvertFunctions extends BaseTestQuery {
   public void testConvertFromJson_drill4693() throws Exception {
     Object mapVal1 = mapOf("x", "y");
 
-    String query = String.format("select 'abc' as col1, convert_from('{\"x\" : \"y\"}', 'json') as col2, 'xyz' as col3 "
-        + " from cp.`/store/json/input2.json` t"
-        + " where t.`integer` = 2001");
-
     testBuilder()
-        .sqlQuery(query)
+        .sqlQuery("select 'abc' as col1, convert_from('{\"x\" : \"y\"}', 'json') as col2, 'xyz' as col3 "
+          + " from cp.`store/json/input2.json` t"
+          + " where t.`integer` = 2001")
         .unOrdered()
         .baselineColumns("col1", "col2", "col3")
         .baselineValues("abc", mapVal1, "xyz")
@@ -260,7 +252,7 @@ public class TestConvertFunctions extends BaseTestQuery {
     String result2 = "[ ]";
 
     testBuilder()
-        .sqlQuery("select cast(convert_to(rl[1], 'EXTENDEDJSON') as varchar(100)) as json_str from cp.`/store/json/input2.json`")
+        .sqlQuery("select cast(convert_to(rl[1], 'EXTENDEDJSON') as varchar(100)) as json_str from cp.`store/json/input2.json`")
         .unOrdered()
         .baselineColumns("json_str")
         .baselineValues(result1)
@@ -483,32 +475,27 @@ public class TestConvertFunctions extends BaseTestQuery {
   }
 
   @Test
-  public void testFloats5(@Injectable final DrillbitContext bitContext,
-                           @Injectable UserServer.UserClientConnection connection) throws Throwable {
+  public void testFloats5() throws Throwable {
     verifyPhysicalPlan("convert_from(convert_to(cast(77 as float8), 'DOUBLE'), 'DOUBLE')", 77.0);
   }
 
   @Test
-  public void testFloats5be(@Injectable final DrillbitContext bitContext,
-                          @Injectable UserServer.UserClientConnection connection) throws Throwable {
+  public void testFloats5be() throws Throwable {
     verifyPhysicalPlan("convert_from(convert_to(cast(77 as float8), 'DOUBLE_BE'), 'DOUBLE_BE')", 77.0);
   }
 
   @Test
-  public void testFloats6(@Injectable final DrillbitContext bitContext,
-                           @Injectable UserServer.UserClientConnection connection) throws Throwable {
+  public void testFloats6() throws Throwable {
     verifyPhysicalPlan("convert_to(cast(77 as float8), 'DOUBLE')", new byte[] {0, 0, 0, 0, 0, 64, 83, 64});
   }
 
   @Test
-  public void testFloats7(@Injectable final DrillbitContext bitContext,
-                           @Injectable UserServer.UserClientConnection connection) throws Throwable {
+  public void testFloats7() throws Throwable {
     verifyPhysicalPlan("convert_to(4.9e-324, 'DOUBLE')", new byte[] {1, 0, 0, 0, 0, 0, 0, 0});
   }
 
   @Test
-  public void testFloats8(@Injectable final DrillbitContext bitContext,
-                           @Injectable UserServer.UserClientConnection connection) throws Throwable {
+  public void testFloats8() throws Throwable {
     verifyPhysicalPlan("convert_to(1.7976931348623157e+308, 'DOUBLE')", new byte[] {-1, -1, -1, -1, -1, -1, -17, 127});
   }
 
@@ -547,7 +534,7 @@ public class TestConvertFunctions extends BaseTestQuery {
       testBigIntVarCharReturnTripConvertLogical();
     } finally {
       // restore the system option
-      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption);
+      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption.string_val);
     }
   }
 
@@ -564,7 +551,7 @@ public class TestConvertFunctions extends BaseTestQuery {
     } catch(RpcException e) {
       caughtException = true;
     } finally {
-      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption);
+      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption.string_val);
     }
 
     // Yes: sometimes this works, sometimes it does not...
@@ -579,7 +566,7 @@ public class TestConvertFunctions extends BaseTestQuery {
       testBigIntVarCharReturnTripConvertLogical();
     } finally {
       // restore the system option
-      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption);
+      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption.string_val);
     }
   }
 
@@ -650,7 +637,7 @@ public class TestConvertFunctions extends BaseTestQuery {
 
     } finally {
       // restore the system option
-      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption);
+      QueryTestUtil.restoreScalarReplacementOption(bits[0], srOption.string_val);
     }
   }
 

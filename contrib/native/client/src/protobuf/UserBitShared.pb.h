@@ -72,11 +72,14 @@ enum DrillPBError_ErrorType {
   DrillPBError_ErrorType_RESOURCE = 7,
   DrillPBError_ErrorType_SYSTEM = 8,
   DrillPBError_ErrorType_UNSUPPORTED_OPERATION = 9,
-  DrillPBError_ErrorType_VALIDATION = 10
+  DrillPBError_ErrorType_VALIDATION = 10,
+  DrillPBError_ErrorType_EXECUTION_ERROR = 11,
+  DrillPBError_ErrorType_INTERNAL_ERROR = 12,
+  DrillPBError_ErrorType_UNSPECIFIED_ERROR = 13
 };
 bool DrillPBError_ErrorType_IsValid(int value);
 const DrillPBError_ErrorType DrillPBError_ErrorType_ErrorType_MIN = DrillPBError_ErrorType_CONNECTION;
-const DrillPBError_ErrorType DrillPBError_ErrorType_ErrorType_MAX = DrillPBError_ErrorType_VALIDATION;
+const DrillPBError_ErrorType DrillPBError_ErrorType_ErrorType_MAX = DrillPBError_ErrorType_UNSPECIFIED_ERROR;
 const int DrillPBError_ErrorType_ErrorType_ARRAYSIZE = DrillPBError_ErrorType_ErrorType_MAX + 1;
 
 const ::google::protobuf::EnumDescriptor* DrillPBError_ErrorType_descriptor();
@@ -115,11 +118,13 @@ enum QueryResult_QueryState {
   QueryResult_QueryState_CANCELED = 3,
   QueryResult_QueryState_FAILED = 4,
   QueryResult_QueryState_CANCELLATION_REQUESTED = 5,
-  QueryResult_QueryState_ENQUEUED = 6
+  QueryResult_QueryState_ENQUEUED = 6,
+  QueryResult_QueryState_PREPARING = 7,
+  QueryResult_QueryState_PLANNING = 8
 };
 bool QueryResult_QueryState_IsValid(int value);
 const QueryResult_QueryState QueryResult_QueryState_QueryState_MIN = QueryResult_QueryState_STARTING;
-const QueryResult_QueryState QueryResult_QueryState_QueryState_MAX = QueryResult_QueryState_ENQUEUED;
+const QueryResult_QueryState QueryResult_QueryState_QueryState_MAX = QueryResult_QueryState_PLANNING;
 const int QueryResult_QueryState_QueryState_ARRAYSIZE = QueryResult_QueryState_QueryState_MAX + 1;
 
 const ::google::protobuf::EnumDescriptor* QueryResult_QueryState_descriptor();
@@ -235,11 +240,14 @@ enum CoreOperatorType {
   HBASE_SUB_SCAN = 33,
   WINDOW = 34,
   NESTED_LOOP_JOIN = 35,
-  AVRO_SUB_SCAN = 36
+  AVRO_SUB_SCAN = 36,
+  PCAP_SUB_SCAN = 37,
+  KAFKA_SUB_SCAN = 38,
+  KUDU_SUB_SCAN = 39
 };
 bool CoreOperatorType_IsValid(int value);
 const CoreOperatorType CoreOperatorType_MIN = SINGLE_SENDER;
-const CoreOperatorType CoreOperatorType_MAX = AVRO_SUB_SCAN;
+const CoreOperatorType CoreOperatorType_MAX = KUDU_SUB_SCAN;
 const int CoreOperatorType_ARRAYSIZE = CoreOperatorType_MAX + 1;
 
 const ::google::protobuf::EnumDescriptor* CoreOperatorType_descriptor();
@@ -519,6 +527,9 @@ class DrillPBError : public ::google::protobuf::Message {
   static const ErrorType SYSTEM = DrillPBError_ErrorType_SYSTEM;
   static const ErrorType UNSUPPORTED_OPERATION = DrillPBError_ErrorType_UNSUPPORTED_OPERATION;
   static const ErrorType VALIDATION = DrillPBError_ErrorType_VALIDATION;
+  static const ErrorType EXECUTION_ERROR = DrillPBError_ErrorType_EXECUTION_ERROR;
+  static const ErrorType INTERNAL_ERROR = DrillPBError_ErrorType_INTERNAL_ERROR;
+  static const ErrorType UNSPECIFIED_ERROR = DrillPBError_ErrorType_UNSPECIFIED_ERROR;
   static inline bool ErrorType_IsValid(int value) {
     return DrillPBError_ErrorType_IsValid(value);
   }
@@ -1542,6 +1553,8 @@ class QueryResult : public ::google::protobuf::Message {
   static const QueryState FAILED = QueryResult_QueryState_FAILED;
   static const QueryState CANCELLATION_REQUESTED = QueryResult_QueryState_CANCELLATION_REQUESTED;
   static const QueryState ENQUEUED = QueryResult_QueryState_ENQUEUED;
+  static const QueryState PREPARING = QueryResult_QueryState_PREPARING;
+  static const QueryState PLANNING = QueryResult_QueryState_PLANNING;
   static inline bool QueryState_IsValid(int value) {
     return QueryResult_QueryState_IsValid(value);
   }
@@ -1837,6 +1850,25 @@ class QueryInfo : public ::google::protobuf::Message {
   inline ::std::string* release_options_json();
   inline void set_allocated_options_json(::std::string* options_json);
 
+  // optional double total_cost = 7;
+  inline bool has_total_cost() const;
+  inline void clear_total_cost();
+  static const int kTotalCostFieldNumber = 7;
+  inline double total_cost() const;
+  inline void set_total_cost(double value);
+
+  // optional string queue_name = 8 [default = "-"];
+  inline bool has_queue_name() const;
+  inline void clear_queue_name();
+  static const int kQueueNameFieldNumber = 8;
+  inline const ::std::string& queue_name() const;
+  inline void set_queue_name(const ::std::string& value);
+  inline void set_queue_name(const char* value);
+  inline void set_queue_name(const char* value, size_t size);
+  inline ::std::string* mutable_queue_name();
+  inline ::std::string* release_queue_name();
+  inline void set_allocated_queue_name(::std::string* queue_name);
+
   // @@protoc_insertion_point(class_scope:exec.shared.QueryInfo)
  private:
   inline void set_has_query();
@@ -1851,6 +1883,10 @@ class QueryInfo : public ::google::protobuf::Message {
   inline void clear_has_foreman();
   inline void set_has_options_json();
   inline void clear_has_options_json();
+  inline void set_has_total_cost();
+  inline void clear_has_total_cost();
+  inline void set_has_queue_name();
+  inline void clear_has_queue_name();
 
   ::google::protobuf::UnknownFieldSet _unknown_fields_;
 
@@ -1860,10 +1896,13 @@ class QueryInfo : public ::google::protobuf::Message {
   static ::std::string* _default_user_;
   ::exec::DrillbitEndpoint* foreman_;
   ::std::string* options_json_;
+  double total_cost_;
+  ::std::string* queue_name_;
+  static ::std::string* _default_queue_name_;
   int state_;
 
   mutable int _cached_size_;
-  ::google::protobuf::uint32 _has_bits_[(6 + 31) / 32];
+  ::google::protobuf::uint32 _has_bits_[(8 + 31) / 32];
 
   friend void  protobuf_AddDesc_UserBitShared_2eproto();
   friend void protobuf_AssignDesc_UserBitShared_2eproto();
@@ -2110,6 +2149,25 @@ class QueryProfile : public ::google::protobuf::Message {
   inline ::google::protobuf::int64 queuewaitend() const;
   inline void set_queuewaitend(::google::protobuf::int64 value);
 
+  // optional double total_cost = 20;
+  inline bool has_total_cost() const;
+  inline void clear_total_cost();
+  static const int kTotalCostFieldNumber = 20;
+  inline double total_cost() const;
+  inline void set_total_cost(double value);
+
+  // optional string queue_name = 21 [default = "-"];
+  inline bool has_queue_name() const;
+  inline void clear_queue_name();
+  static const int kQueueNameFieldNumber = 21;
+  inline const ::std::string& queue_name() const;
+  inline void set_queue_name(const ::std::string& value);
+  inline void set_queue_name(const char* value);
+  inline void set_queue_name(const char* value, size_t size);
+  inline ::std::string* mutable_queue_name();
+  inline ::std::string* release_queue_name();
+  inline void set_allocated_queue_name(::std::string* queue_name);
+
   // @@protoc_insertion_point(class_scope:exec.shared.QueryProfile)
  private:
   inline void set_has_id();
@@ -2148,6 +2206,10 @@ class QueryProfile : public ::google::protobuf::Message {
   inline void clear_has_planend();
   inline void set_has_queuewaitend();
   inline void clear_has_queuewaitend();
+  inline void set_has_total_cost();
+  inline void clear_has_total_cost();
+  inline void set_has_queue_name();
+  inline void clear_has_queue_name();
 
   ::google::protobuf::UnknownFieldSet _unknown_fields_;
 
@@ -2171,9 +2233,12 @@ class QueryProfile : public ::google::protobuf::Message {
   ::std::string* options_json_;
   ::google::protobuf::int64 planend_;
   ::google::protobuf::int64 queuewaitend_;
+  double total_cost_;
+  ::std::string* queue_name_;
+  static ::std::string* _default_queue_name_;
 
   mutable int _cached_size_;
-  ::google::protobuf::uint32 _has_bits_[(19 + 31) / 32];
+  ::google::protobuf::uint32 _has_bits_[(21 + 31) / 32];
 
   friend void  protobuf_AddDesc_UserBitShared_2eproto();
   friend void protobuf_AssignDesc_UserBitShared_2eproto();
@@ -4995,6 +5060,98 @@ inline void QueryInfo::set_allocated_options_json(::std::string* options_json) {
   }
 }
 
+// optional double total_cost = 7;
+inline bool QueryInfo::has_total_cost() const {
+  return (_has_bits_[0] & 0x00000040u) != 0;
+}
+inline void QueryInfo::set_has_total_cost() {
+  _has_bits_[0] |= 0x00000040u;
+}
+inline void QueryInfo::clear_has_total_cost() {
+  _has_bits_[0] &= ~0x00000040u;
+}
+inline void QueryInfo::clear_total_cost() {
+  total_cost_ = 0;
+  clear_has_total_cost();
+}
+inline double QueryInfo::total_cost() const {
+  return total_cost_;
+}
+inline void QueryInfo::set_total_cost(double value) {
+  set_has_total_cost();
+  total_cost_ = value;
+}
+
+// optional string queue_name = 8 [default = "-"];
+inline bool QueryInfo::has_queue_name() const {
+  return (_has_bits_[0] & 0x00000080u) != 0;
+}
+inline void QueryInfo::set_has_queue_name() {
+  _has_bits_[0] |= 0x00000080u;
+}
+inline void QueryInfo::clear_has_queue_name() {
+  _has_bits_[0] &= ~0x00000080u;
+}
+inline void QueryInfo::clear_queue_name() {
+  if (queue_name_ != _default_queue_name_) {
+    queue_name_->assign(*_default_queue_name_);
+  }
+  clear_has_queue_name();
+}
+inline const ::std::string& QueryInfo::queue_name() const {
+  return *queue_name_;
+}
+inline void QueryInfo::set_queue_name(const ::std::string& value) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(value);
+}
+inline void QueryInfo::set_queue_name(const char* value) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(value);
+}
+inline void QueryInfo::set_queue_name(const char* value, size_t size) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(reinterpret_cast<const char*>(value), size);
+}
+inline ::std::string* QueryInfo::mutable_queue_name() {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string(*_default_queue_name_);
+  }
+  return queue_name_;
+}
+inline ::std::string* QueryInfo::release_queue_name() {
+  clear_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    return NULL;
+  } else {
+    ::std::string* temp = queue_name_;
+    queue_name_ = const_cast< ::std::string*>(_default_queue_name_);
+    return temp;
+  }
+}
+inline void QueryInfo::set_allocated_queue_name(::std::string* queue_name) {
+  if (queue_name_ != _default_queue_name_) {
+    delete queue_name_;
+  }
+  if (queue_name) {
+    set_has_queue_name();
+    queue_name_ = queue_name;
+  } else {
+    clear_has_queue_name();
+    queue_name_ = const_cast< ::std::string*>(_default_queue_name_);
+  }
+}
+
 // -------------------------------------------------------------------
 
 // QueryProfile
@@ -5836,6 +5993,98 @@ inline ::google::protobuf::int64 QueryProfile::queuewaitend() const {
 inline void QueryProfile::set_queuewaitend(::google::protobuf::int64 value) {
   set_has_queuewaitend();
   queuewaitend_ = value;
+}
+
+// optional double total_cost = 20;
+inline bool QueryProfile::has_total_cost() const {
+  return (_has_bits_[0] & 0x00080000u) != 0;
+}
+inline void QueryProfile::set_has_total_cost() {
+  _has_bits_[0] |= 0x00080000u;
+}
+inline void QueryProfile::clear_has_total_cost() {
+  _has_bits_[0] &= ~0x00080000u;
+}
+inline void QueryProfile::clear_total_cost() {
+  total_cost_ = 0;
+  clear_has_total_cost();
+}
+inline double QueryProfile::total_cost() const {
+  return total_cost_;
+}
+inline void QueryProfile::set_total_cost(double value) {
+  set_has_total_cost();
+  total_cost_ = value;
+}
+
+// optional string queue_name = 21 [default = "-"];
+inline bool QueryProfile::has_queue_name() const {
+  return (_has_bits_[0] & 0x00100000u) != 0;
+}
+inline void QueryProfile::set_has_queue_name() {
+  _has_bits_[0] |= 0x00100000u;
+}
+inline void QueryProfile::clear_has_queue_name() {
+  _has_bits_[0] &= ~0x00100000u;
+}
+inline void QueryProfile::clear_queue_name() {
+  if (queue_name_ != _default_queue_name_) {
+    queue_name_->assign(*_default_queue_name_);
+  }
+  clear_has_queue_name();
+}
+inline const ::std::string& QueryProfile::queue_name() const {
+  return *queue_name_;
+}
+inline void QueryProfile::set_queue_name(const ::std::string& value) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(value);
+}
+inline void QueryProfile::set_queue_name(const char* value) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(value);
+}
+inline void QueryProfile::set_queue_name(const char* value, size_t size) {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string;
+  }
+  queue_name_->assign(reinterpret_cast<const char*>(value), size);
+}
+inline ::std::string* QueryProfile::mutable_queue_name() {
+  set_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    queue_name_ = new ::std::string(*_default_queue_name_);
+  }
+  return queue_name_;
+}
+inline ::std::string* QueryProfile::release_queue_name() {
+  clear_has_queue_name();
+  if (queue_name_ == _default_queue_name_) {
+    return NULL;
+  } else {
+    ::std::string* temp = queue_name_;
+    queue_name_ = const_cast< ::std::string*>(_default_queue_name_);
+    return temp;
+  }
+}
+inline void QueryProfile::set_allocated_queue_name(::std::string* queue_name) {
+  if (queue_name_ != _default_queue_name_) {
+    delete queue_name_;
+  }
+  if (queue_name) {
+    set_has_queue_name();
+    queue_name_ = queue_name;
+  } else {
+    clear_has_queue_name();
+    queue_name_ = const_cast< ::std::string*>(_default_queue_name_);
+  }
 }
 
 // -------------------------------------------------------------------

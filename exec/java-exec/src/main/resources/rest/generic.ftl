@@ -27,7 +27,9 @@
 
       <link href="/static/css/bootstrap.min.css" rel="stylesheet">
 
-      <script src="/static/js/jquery.min.js"></script>
+      <script type="text/javascript" language="javascript" src="//ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+      <script> window.jQuery  || document.write('<script type="text/javascript" language="javascript" src="../static/js/jquery-3.2.1.min.js">\x3C/script>')
+      </script>
       <script src="/static/js/bootstrap.min.js"></script>
 
       <!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
@@ -75,7 +77,7 @@
               </#if>
               <li><a href="http://drill.apache.org/docs/">Documentation</a>
               <#if showLogin == true >
-              <li><a href="/login">Log In</a>
+              <li><a href="/mainLogin">Log In</a>
               </#if>
               <#if showLogout == true >
               <li><a href="/logout">Log Out (${loggedInUserName})</a>

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -120,6 +120,7 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
     }
   }
 
+  @Override
   protected FieldWriter getWriter(MinorType type) {
     if (state == State.UNION) {
       return writer;
@@ -144,12 +145,13 @@ public class PromotableWriter extends AbstractPromotableFieldWriter {
     return writer.isEmptyMap();
   }
 
+  @Override
   protected FieldWriter getWriter() {
     return getWriter(type);
   }
 
   private FieldWriter promoteToUnion() {
-    String name = vector.getField().getLastName();
+    String name = vector.getField().getName();
     TransferPair tp = vector.getTransferPair(vector.getField().getType().getMinorType().name().toLowerCase(), vector.getAllocator());
     tp.transfer();
     if (parentContainer != null) {

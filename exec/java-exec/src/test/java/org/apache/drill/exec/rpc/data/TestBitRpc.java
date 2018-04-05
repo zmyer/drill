@@ -17,19 +17,9 @@
  */
 package org.apache.drill.exec.rpc.data;
 
-import static org.junit.Assert.assertTrue;
+import com.google.common.base.Stopwatch;
+import com.google.common.collect.Lists;
 import io.netty.buffer.ByteBuf;
-
-import java.io.IOException;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-
-import mockit.Injectable;
-import mockit.Mock;
-import mockit.MockUp;
-import mockit.NonStrictExpectations;
-
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.scanner.ClassPathScanner;
 import org.apache.drill.common.types.TypeProtos.MinorType;
@@ -39,6 +29,7 @@ import org.apache.drill.exec.exception.FragmentSetupException;
 import org.apache.drill.exec.expr.TypeHelper;
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.exec.ops.FragmentContextImpl;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
 import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
 import org.apache.drill.exec.proto.GeneralRPCProtos.Ack;
@@ -51,64 +42,37 @@ import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.RpcOutcomeListener;
 import org.apache.drill.exec.rpc.control.WorkEventBus;
 import org.apache.drill.exec.server.BootStrapContext;
+import org.apache.drill.exec.server.options.SystemOptionManager;
 import org.apache.drill.exec.vector.Float8Vector;
 import org.apache.drill.exec.vector.ValueVector;
 import org.apache.drill.exec.work.WorkManager.WorkerBee;
+import org.apache.drill.exec.work.fragment.FragmentExecutor;
 import org.apache.drill.exec.work.fragment.FragmentManager;
 import org.junit.Test;
 
-import com.google.common.base.Stopwatch;
-import com.google.common.collect.Lists;
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestBitRpc extends ExecTest {
-  static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(TestBitRpc.class);
-
   @Test
-  public void testConnectionBackpressure(@Injectable WorkerBee bee, @Injectable final WorkEventBus workBus) throws Exception {
+  public void testConnectionBackpressure() throws Exception {
+    final WorkerBee bee = mock(WorkerBee.class);
+    final WorkEventBus workBus = mock(WorkEventBus.class);
+    final DrillConfig config1 = DrillConfig.create();
+    final BootStrapContext c = new BootStrapContext(config1, SystemOptionManager.createDefaultOptionDefinitions(), ClassPathScanner.fromPrescan(config1));
+    final FragmentContextImpl fcon = mock(FragmentContextImpl.class);
+    when(fcon.getAllocator()).thenReturn(c.getAllocator());
 
-    DrillConfig config1 = DrillConfig.create();
-    final BootStrapContext c = new BootStrapContext(config1, ClassPathScanner.fromPrescan(config1));
-    DrillConfig config2 = DrillConfig.create();
-    BootStrapContext c2 = new BootStrapContext(config2, ClassPathScanner.fromPrescan(config2));
+    final FragmentManager fman = new MockFragmentManager(c);
 
-    final FragmentContext fcon = new MockUp<FragmentContext>(){
-      BufferAllocator getAllocator(){
-        return c.getAllocator();
-      }
-    }.getMockInstance();
-
-    final FragmentManager fman = new MockUp<FragmentManager>(){
-      int v = 0;
-
-      @Mock
-      boolean handle(IncomingDataBatch batch) throws FragmentSetupException, IOException {
-        try {
-          v++;
-          if (v % 10 == 0) {
-            System.out.println("sleeping.");
-            Thread.sleep(3000);
-          }
-        } catch (InterruptedException e) {
-
-        }
-        RawFragmentBatch rfb = batch.newRawFragmentBatch(c.getAllocator());
-        rfb.sendOk();
-        rfb.release();
-
-        return true;
-      }
-
-      public FragmentContext getFragmentContext(){
-        return fcon;
-      }
-
-    }.getMockInstance();
-
-
-    new NonStrictExpectations() {{
-      workBus.getFragmentManagerIfExists((FragmentHandle) any); result = fman;
-      workBus.getFragmentManager( (FragmentHandle) any); result = fman;
-    }};
+    when(workBus.getFragmentManager(any(FragmentHandle.class))).thenReturn(fman);
 
     int port = 1234;
 
@@ -126,7 +90,6 @@ public class TestBitRpc extends ExecTest {
       tunnel.sendRecordBatch(new TimingOutcome(max), new FragmentWritableBatch(false, QueryId.getDefaultInstance(), 1,
           1, 1, 1, getRandomBatch(c.getAllocator(), 5000)));
       System.out.println(System.currentTimeMillis() - t1);
-      // System.out.println("sent.");
     }
     System.out.println(String.format("Max time: %d", max.get()));
     assertTrue(max.get() > 2700);
@@ -182,4 +145,72 @@ public class TestBitRpc extends ExecTest {
     }
   }
 
+  public static class MockFragmentManager implements FragmentManager
+  {
+    private final BootStrapContext c;
+    private int v;
+
+    public MockFragmentManager(BootStrapContext c)
+    {
+      this.c = c;
+    }
+
+    @Override
+    public boolean handle(IncomingDataBatch batch) throws FragmentSetupException, IOException {
+      try {
+        v++;
+        if (v % 10 == 0) {
+          System.out.println("sleeping.");
+          Thread.sleep(3000);
+        }
+      } catch (InterruptedException e) {
+
+      }
+      RawFragmentBatch rfb = batch.newRawFragmentBatch(c.getAllocator());
+      rfb.sendOk();
+      rfb.release();
+
+      return true;
+    }
+
+    @Override
+    public FragmentExecutor getRunnable() {
+      return null;
+    }
+
+    @Override
+    public void cancel() {
+
+    }
+
+    @Override
+    public boolean isCancelled() {
+      return false;
+    }
+
+    @Override
+    public void unpause() {
+
+    }
+
+    @Override
+    public boolean isWaiting() {
+      return false;
+    }
+
+    @Override
+    public FragmentHandle getHandle() {
+      return null;
+    }
+
+    @Override
+    public FragmentContext getFragmentContext() {
+      return null;
+    }
+
+    @Override
+    public void receivingFragmentFinished(FragmentHandle handle) {
+
+    }
+  }
 }

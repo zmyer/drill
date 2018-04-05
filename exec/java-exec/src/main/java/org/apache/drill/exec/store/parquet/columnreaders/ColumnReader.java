@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -81,6 +81,8 @@ public abstract class ColumnReader<V extends ValueVector> {
   long readStartInBytes = 0, readLength = 0, readLengthInBits = 0, recordsReadInThisIteration = 0;
   private ExecutorService threadPool;
 
+  volatile boolean isShuttingDown; //Indicate to not submit any new AsyncPageReader Tasks during clear()
+
   protected ColumnReader(ParquetRecordReader parentReader, int allocateSize, ColumnDescriptor descriptor,
       ColumnChunkMetaData columnChunkMetaData, boolean fixedLength, V v, SchemaElement schemaElement) throws ExecutionSetupException {
     this.parentReader = parentReader;
@@ -99,18 +101,25 @@ public abstract class ColumnReader<V extends ValueVector> {
           new PageReader(this, parentReader.getFileSystem(), parentReader.getHadoopPath(),
               columnChunkMetaData);
     }
+    try {
+      pageReader.init();
+    } catch (IOException e) {
+      UserException ex = UserException.dataReadError(e)
+          .message("Error initializing page reader for Parquet file")
+          .pushContext("Row Group Start: ", this.columnChunkMetaData.getStartingPos())
+          .pushContext("Column: ", this.schemaElement.getName())
+          .pushContext("File: ", this.parentReader.getHadoopPath().toString() )
+          .build(logger);
+      throw ex;
+    }
     if (columnDescriptor.getType() != PrimitiveType.PrimitiveTypeName.BINARY) {
       if (columnDescriptor.getType() == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY) {
-        // Here "bits" means "bytes"
         dataTypeLengthInBits = columnDescriptor.getTypeLength() * 8;
       } else {
-        // While here, "bits" means "bits"
-        dataTypeLengthInBits = ParquetRecordReader.getTypeLengthInBits(columnDescriptor.getType());
+        dataTypeLengthInBits = ParquetColumnMetadata.getTypeLengthInBits(columnDescriptor.getType());
       }
     }
-    if(threadPool == null) {
-      threadPool = parentReader.getOperatorContext().getScanDecodeExecutor();
-    }
+    threadPool = parentReader.getOperatorContext().getScanDecodeExecutor();
   }
 
   public int getRecordsReadInCurrentPass() {
@@ -118,7 +127,7 @@ public abstract class ColumnReader<V extends ValueVector> {
   }
 
   public Future<Long> processPagesAsync(long recordsToReadInThisPass){
-    Future<Long> r = threadPool.submit(new ColumnReaderProcessPagesTask(recordsToReadInThisPass));
+    Future<Long> r = (isShuttingDown ? null : threadPool.submit(new ColumnReaderProcessPagesTask(recordsToReadInThisPass)));
     return r;
   }
 
@@ -136,6 +145,9 @@ public abstract class ColumnReader<V extends ValueVector> {
   }
 
   public void clear() {
+    //State to indicate no more tasks to be scheduled
+    isShuttingDown = true;
+
     valueVec.clear();
     pageReader.clear();
   }
@@ -183,8 +195,8 @@ public abstract class ColumnReader<V extends ValueVector> {
     return checkVectorCapacityReached();
   }
 
-  protected Future<Integer> readRecordsAsync(int recordsToRead){
-    Future<Integer> r = threadPool.submit(new ColumnReaderReadRecordsTask(recordsToRead));
+  protected Future<Integer> readRecordsAsync(int recordsToRead) {
+    Future<Integer> r = (isShuttingDown ? null : threadPool.submit(new ColumnReaderReadRecordsTask(recordsToRead)));
     return r;
   }
 
@@ -220,7 +232,7 @@ public abstract class ColumnReader<V extends ValueVector> {
   public Future<Boolean> readPageAsync() {
     Future<Boolean> f = threadPool.submit(new Callable<Boolean>() {
       @Override public Boolean call() throws Exception {
-        return new Boolean(readPage());
+        return Boolean.valueOf(readPage());
       }
     });
     return f;

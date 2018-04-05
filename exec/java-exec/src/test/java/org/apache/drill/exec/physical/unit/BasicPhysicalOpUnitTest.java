@@ -17,13 +17,15 @@
  */
 package org.apache.drill.exec.physical.unit;
 
-import static org.apache.drill.TestBuilder.mapOf;
+import static org.apache.drill.test.TestBuilder.mapOf;
 
 import java.util.List;
 
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.exec.physical.MinorFragmentEndpoint;
+import org.apache.drill.exec.physical.base.PhysicalOperator;
 import org.apache.drill.exec.physical.config.ComplexToJson;
 import org.apache.drill.exec.physical.config.ExternalSort;
 import org.apache.drill.exec.physical.config.Filter;
@@ -34,6 +36,8 @@ import org.apache.drill.exec.physical.config.MergingReceiverPOP;
 import org.apache.drill.exec.physical.config.Project;
 import org.apache.drill.exec.physical.config.StreamingAggregate;
 import org.apache.drill.exec.physical.config.TopN;
+import org.apache.drill.exec.physical.config.FlattenPOP;
+import org.apache.drill.exec.planner.physical.AggPrelBase;
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -74,6 +78,7 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
         .go();
   }
 
+  @SuppressWarnings("unchecked")
   @Test
   public void testSimpleHashJoin() {
     HashJoinPOP joinConf = new HashJoinPOP(null, null, Lists.newArrayList(joinCond("x", "EQUALS", "x1")), JoinRelType.LEFT);
@@ -99,6 +104,7 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
         .go();
   }
 
+  @SuppressWarnings("unchecked")
   @Test
   public void testSimpleMergeJoin() {
     MergeJoinPOP joinConf = new MergeJoinPOP(null, null, Lists.newArrayList(joinCond("x", "EQUALS", "x1")), JoinRelType.LEFT);
@@ -125,7 +131,7 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
 
   @Test
   public void testSimpleHashAgg() {
-    HashAggregate aggConf = new HashAggregate(null, parseExprs("a", "a"), parseExprs("sum(b)", "b_sum"), 1.0f);
+    HashAggregate aggConf = new HashAggregate(null, AggPrelBase.OperatorPhase.PHASE_1of1, parseExprs("a", "a"), parseExprs("sum(b)", "b_sum"), 1.0f);
     List<String> inputJsonBatches = Lists.newArrayList(
         "[{\"a\": 5, \"b\" : 1 }]",
         "[{\"a\": 5, \"b\" : 5},{\"a\": 3, \"b\" : 8}]");
@@ -186,6 +192,32 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
   }
 
   @Test
+  public void testFlatten() {
+    final PhysicalOperator flatten = new FlattenPOP(null, SchemaPath.getSimplePath("b"));
+    List<String> inputJsonBatches = Lists.newArrayList();
+    StringBuilder batchString = new StringBuilder();
+
+    for (int j = 0; j < 1; j++) {
+      batchString.append("[");
+      for (int i = 0; i < 1; i++) {
+        batchString.append("{\"a\": 5, \"b\" : [5, 6, 7]}");
+      }
+      batchString.append("]");
+      inputJsonBatches.add(batchString.toString());
+    }
+
+    OperatorTestBuilder opTestBuilder = opTestBuilder()
+            .physicalOperator(flatten)
+            .inputDataStreamJson(inputJsonBatches)
+            .baselineColumns("a", "b")
+            .baselineValues(5l, 5l)
+            .baselineValues(5l, 6l)
+            .baselineValues(5l, 7l);
+
+    opTestBuilder.go();
+  }
+
+  @Test
   public void testExternalSort() {
     ExternalSort sortConf = new ExternalSort(null,
         Lists.newArrayList(ordering("b", RelFieldCollation.Direction.ASCENDING, RelFieldCollation.NullDirection.FIRST)), false);
@@ -195,6 +227,7 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
         "[{\"a\": 40, \"b\" : 3},{\"a\": 13, \"b\" : 100}]");
     opTestBuilder()
         .physicalOperator(sortConf)
+        .maxAllocation(15_000_000L)
         .inputDataStreamJson(inputJsonBatches)
         .baselineColumns("a", "b")
         .baselineValues(5l, 1l)
@@ -291,6 +324,7 @@ public class BasicPhysicalOpUnitTest extends PhysicalOpUnitTestBase {
 
   // TODO(DRILL-4439) - doesn't expect incoming batches, uses instead RawFragmentBatch
   // need to figure out how to mock these
+  @SuppressWarnings("unchecked")
   @Ignore
   @Test
   public void testSimpleMergingReceiver() {

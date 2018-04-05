@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,6 +20,9 @@ package org.apache.drill.common.types;
 import static org.apache.drill.common.types.TypeProtos.DataMode.REPEATED;
 
 import java.sql.ResultSetMetaData;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 import org.apache.drill.common.exceptions.DrillRuntimeException;
 import org.apache.drill.common.types.TypeProtos.DataMode;
@@ -27,9 +30,13 @@ import org.apache.drill.common.types.TypeProtos.MajorType;
 import org.apache.drill.common.types.TypeProtos.MinorType;
 
 import com.google.protobuf.TextFormat;
+import org.apache.drill.common.util.CoreDecimalUtility;
 
 public class Types {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(Types.class);
+
+  public static final int MAX_VARCHAR_LENGTH = 65535;
+  public static final int UNDEFINED = 0;
 
   public static final MajorType NULL = required(MinorType.NULL);
   public static final MajorType LATE_BIND_TYPE = optional(MinorType.LATE);
@@ -41,8 +48,8 @@ public class Types {
     return toType.getMinorType() == MinorType.UNION;
   }
 
-  public static enum Comparability {
-    UNKNOWN, NONE, EQUAL, ORDERED;
+  public enum Comparability {
+    UNKNOWN, NONE, EQUAL, ORDERED
   }
 
   public static boolean isComplex(final MajorType type) {
@@ -50,9 +57,9 @@ public class Types {
     case LIST:
     case MAP:
       return true;
+    default:
+      return false;
     }
-
-    return false;
   }
 
   public static boolean isRepeated(final MajorType type) {
@@ -282,80 +289,79 @@ public class Types {
 
   public static int getJdbcDisplaySize(MajorType type) {
     if (type.getMode() == DataMode.REPEATED || type.getMinorType() == MinorType.LIST) {
-      return 0;
+      return UNDEFINED;
     }
 
     final int precision = getPrecision(type);
-
     switch(type.getMinorType()) {
-    case BIT:             return 1; // 1 digit
+      case BIT:             return 1; // 1 digit
 
-    case TINYINT:         return 4; // sign + 3 digit
-    case SMALLINT:        return 6; // sign + 5 digits
-    case INT:             return 11; // sign + 10 digits
-    case BIGINT:          return 20; // sign + 19 digits
+      case TINYINT:         return 4; // sign + 3 digit
+      case SMALLINT:        return 6; // sign + 5 digits
+      case INT:             return 11; // sign + 10 digits
+      case BIGINT:          return 20; // sign + 19 digits
 
-    case UINT1:          return 3; // 3 digits
-    case UINT2:          return 5; // 5 digits
-    case UINT4:          return 10; // 10 digits
-    case UINT8:          return 19; // 19 digits
+      case UINT1:          return 3; // 3 digits
+      case UINT2:          return 5; // 5 digits
+      case UINT4:          return 10; // 10 digits
+      case UINT8:          return 19; // 19 digits
 
-    case FLOAT4:          return 14; // sign + 7 digits + decimal point + E + 2 digits
-    case FLOAT8:          return 24; // sign + 15 digits + decimal point + E + 3 digits
+      case FLOAT4:          return 14; // sign + 7 digits + decimal point + E + 2 digits
+      case FLOAT8:          return 24; // sign + 15 digits + decimal point + E + 3 digits
 
-    case DECIMAL9:
-    case DECIMAL18:
-    case DECIMAL28DENSE:
-    case DECIMAL28SPARSE:
-    case DECIMAL38DENSE:
-    case DECIMAL38SPARSE:
-    case MONEY:           return 2 + precision; // precision of the column plus a sign and a decimal point
+      case DECIMAL9:
+      case DECIMAL18:
+      case DECIMAL28DENSE:
+      case DECIMAL28SPARSE:
+      case DECIMAL38DENSE:
+      case DECIMAL38SPARSE:
+      case MONEY:           return 2 + precision; // precision of the column plus a sign and a decimal point
 
-    case VARCHAR:
-    case FIXEDCHAR:
-    case VAR16CHAR:
-    case FIXED16CHAR:     return precision; // number of characters
+      case VARCHAR:
+      case FIXEDCHAR:
+      case VAR16CHAR:
+      case FIXED16CHAR:     return precision; // number of characters
 
-    case VARBINARY:
-    case FIXEDBINARY:     return 2 * precision; // each binary byte is represented as a 2digit hex number
+      case VARBINARY:
+      case FIXEDBINARY:     return 2 * precision; // each binary byte is represented as a 2digit hex number
 
-    case DATE:            return 10; // yyyy-mm-dd
-    case TIME:
-      return precision > 0
-        ? 9 + precision // hh-mm-ss.SSS
-        : 8; // hh-mm-ss
-    case TIMETZ:
-      return precision > 0
-        ? 15 + precision // hh-mm-ss.SSS-zz:zz
-        : 14; // hh-mm-ss-zz:zz
-    case TIMESTAMP:
-      return precision > 0
-         ? 20 + precision // yyyy-mm-ddThh:mm:ss.SSS
-         : 19; // yyyy-mm-ddThh:mm:ss
-    case TIMESTAMPTZ:
-      return precision > 0
-        ? 26 + precision // yyyy-mm-ddThh:mm:ss.SSS:ZZ-ZZ
-        : 25; // yyyy-mm-ddThh:mm:ss-ZZ:ZZ
+      case DATE:            return 10; // yyyy-mm-dd
+      case TIME:
+        return precision > 0
+            ? 9 + precision // hh-mm-ss.SSS
+            : 8; // hh-mm-ss
+      case TIMETZ:
+        return precision > 0
+            ? 15 + precision // hh-mm-ss.SSS-zz:zz
+            : 14; // hh-mm-ss-zz:zz
+      case TIMESTAMP:
+        return precision > 0
+            ? 20 + precision // yyyy-mm-ddThh:mm:ss.SSS
+            : 19; // yyyy-mm-ddThh:mm:ss
+      case TIMESTAMPTZ:
+        return precision > 0
+            ? 26 + precision // yyyy-mm-ddThh:mm:ss.SSS:ZZ-ZZ
+            : 25; // yyyy-mm-ddThh:mm:ss-ZZ:ZZ
 
-    case INTERVALYEAR:
-      return precision > 0
-          ? 5 + precision // P..Y12M
-          : 0; // if precision is not set, return 0 because there's not enough info
+      case INTERVALYEAR:
+        return precision > 0
+            ? 5 + precision // P..Y12M
+            : 9; // we assume max is P9999Y12M
 
-    case INTERVALDAY:
-      return precision > 0
-          ? 12 + precision // P..DT12H60M60S assuming fractional seconds precision is not supported
-          : 0; // if precision is not set, return 0 because there's not enough info
+      case INTERVALDAY:
+        return precision > 0
+            ? 12 + precision // P..DT12H60M60S assuming fractional seconds precision is not supported
+            : 22; // the first 4 bytes give the number of days, so we assume max is P2147483648DT12H60M60S
 
-    case INTERVAL:
-    case MAP:
-    case LATE:
-    case NULL:
-    case UNION:           return 0;
+      case INTERVAL:
+      case MAP:
+      case LATE:
+      case NULL:
+      case UNION:
+        return UNDEFINED;
 
-    default:
-      throw new UnsupportedOperationException(
-          "Unexpected/unhandled MinorType value " + type.getMinorType() );
+      default:
+        throw new UnsupportedOperationException("Unexpected/unhandled MinorType value " + type.getMinorType());
     }
   }
   public static boolean usesHolderForGet(final MajorType type) {
@@ -399,7 +405,13 @@ public class Types {
   }
 
 
-  public static boolean isStringScalarType(final MajorType type) {
+  /**
+   * Checks if given major type is string scalar type.
+   *
+   * @param type major type
+   * @return true if given major type is scalar string, false otherwise
+   */
+  public static boolean isScalarStringType(final MajorType type) {
     if (type.getMode() == REPEATED) {
       return false;
     }
@@ -451,9 +463,9 @@ public class Types {
 
   public static boolean softEquals(final MajorType a, final MajorType b, final boolean allowNullSwap) {
     if (a.getMinorType() != b.getMinorType()) {
-        return false;
+      return false;
     }
-    if(allowNullSwap) {
+    if (allowNullSwap) {
       switch (a.getMode()) {
       case OPTIONAL:
       case REQUIRED:
@@ -461,7 +473,9 @@ public class Types {
         case OPTIONAL:
         case REQUIRED:
           return true;
+        default:
         }
+      default:
       }
     }
     return a.getMode() == b.getMode();
@@ -471,8 +485,24 @@ public class Types {
     return type.getMinorType() == MinorType.LATE;
   }
 
+  public static boolean isUntypedNull(final MajorType type) {
+    return type.getMinorType() == MinorType.NULL;
+  }
+
   public static MajorType withMode(final MinorType type, final DataMode mode) {
     return MajorType.newBuilder().setMode(mode).setMinorType(type).build();
+  }
+
+  /**
+   * Builds major type using given minor type, data mode and precision.
+   *
+   * @param type minor type
+   * @param mode data mode
+   * @param precision precision value
+   * @return major type
+   */
+  public static MajorType withPrecision(final MinorType type, final DataMode mode, final int precision) {
+    return MajorType.newBuilder().setMinorType(type).setMode(mode).setPrecision(precision).build();
   }
 
   public static MajorType withScaleAndPrecision(final MinorType type, final DataMode mode, final int scale, final int precision) {
@@ -636,43 +666,126 @@ public class Types {
 
   /**
    * Get the <code>precision</code> of given type.
-   * @param majorType
-   * @return
+   *
+   * @param majorType major type
+   * @return precision value
    */
   public static int getPrecision(MajorType majorType) {
-    MinorType type = majorType.getMinorType();
-
-    if (type == MinorType.VARBINARY || type == MinorType.VARCHAR) {
-      return 65536;
-    }
-
     if (majorType.hasPrecision()) {
       return majorType.getPrecision();
     }
 
-    return 0;
+    return isScalarStringType(majorType) ? MAX_VARCHAR_LENGTH : UNDEFINED;
   }
 
   /**
    * Get the <code>scale</code> of given type.
-   * @param majorType
-   * @return
+   *
+   * @param majorType major type
+   * @return scale value
    */
   public static int getScale(MajorType majorType) {
     if (majorType.hasScale()) {
       return majorType.getScale();
     }
 
-    return 0;
+    return UNDEFINED;
   }
 
   /**
-   * Is the given type column be used in ORDER BY clause?
-   * @param type
-   * @return
+   * Checks if the given type column can be used in ORDER BY clause.
+   *
+   * @param type minor type
+   * @return true if type can be used in ORDER BY clause
    */
   public static boolean isSortable(MinorType type) {
     // Currently only map and list columns are not sortable.
     return type != MinorType.MAP && type != MinorType.LIST;
+  }
+
+  /**
+   * Sets max precision from both types if these types are string scalar types.
+   * Sets max precision and scale from both types if these types are decimal types.
+   * Both types should be of the same minor type.
+   *
+   * @param leftType type from left side
+   * @param rightType type from right side
+   * @param typeBuilder type builder
+   * @return type builder
+   */
+  public static MajorType.Builder calculateTypePrecisionAndScale(MajorType leftType, MajorType rightType, MajorType.Builder typeBuilder) {
+    if (leftType.getMinorType().equals(rightType.getMinorType())) {
+      boolean isScalarString = Types.isScalarStringType(leftType) && Types.isScalarStringType(rightType);
+      boolean isDecimal = CoreDecimalUtility.isDecimalType(leftType);
+
+      if ((isScalarString || isDecimal) && leftType.hasPrecision() && rightType.hasPrecision()) {
+        typeBuilder.setPrecision(Math.max(leftType.getPrecision(), rightType.getPrecision()));
+      }
+
+      if (isDecimal && leftType.hasScale() && rightType.hasScale()) {
+        typeBuilder.setScale(Math.max(leftType.getScale(), rightType.getScale()));
+      }
+    }
+    return typeBuilder;
+  }
+
+  public static boolean isLaterType(MajorType type) {
+    return type.getMinorType() == MinorType.LATE;
+  }
+
+  public static boolean isEquivalent(MajorType type1, MajorType type2) {
+
+    // Requires full type equality, including fields such as precision and scale.
+    // But, unset fields are equivalent to 0. Can't use the protobuf-provided
+    // isEquals() which treats set and unset fields as different.
+
+    if (type1.getMinorType() != type2.getMinorType() ||
+        type1.getMode() != type2.getMode() ||
+        type1.getScale() != type2.getScale() ||
+        type1.getPrecision() != type2.getPrecision()) {
+      return false;
+    }
+
+    // Subtypes are only for unions and are seldom used.
+
+    if (type1.getMinorType() != MinorType.UNION) {
+      return true;
+    }
+
+    List<MinorType> subtypes1 = type1.getSubTypeList();
+    List<MinorType> subtypes2 = type2.getSubTypeList();
+    if (subtypes1 == subtypes2) { // Only occurs if both are null
+      return true;
+    }
+    if (subtypes1 == null || subtypes2 == null) {
+      return false;
+    }
+    if (subtypes1.size() != subtypes2.size()) {
+      return false;
+    }
+
+    // Now it gets slow because subtype lists are not ordered.
+
+    List<MinorType> copy1 = new ArrayList<>();
+    List<MinorType> copy2 = new ArrayList<>();
+    copy1.addAll(subtypes1);
+    copy2.addAll(subtypes2);
+    Collections.sort(copy1);
+    Collections.sort(copy2);
+    return copy1.equals(copy2);
+  }
+
+  /**
+   * The union vector is a map of types. The following method provides
+   * the standard name to use in the type map. It replaces the many
+   * ad-hoc appearances of this code in each reference to the map.
+   *
+   * @param type Drill data type
+   * @return string key to use for this type in a union vector type
+   * map
+   */
+
+  public static String typeKey(MinorType type) {
+    return type.name().toLowerCase();
   }
 }

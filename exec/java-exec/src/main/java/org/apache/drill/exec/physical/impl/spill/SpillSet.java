@@ -18,13 +18,15 @@
 package org.apache.drill.exec.physical.impl.spill;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.WritableByteChannel;
+import java.nio.file.StandardOpenOption;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -32,8 +34,11 @@ import java.util.Set;
 import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.exec.ExecConstants;
+import org.apache.drill.exec.cache.VectorSerializer;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.base.PhysicalOperator;
+import org.apache.drill.exec.physical.config.HashAggregate;
+import org.apache.drill.exec.physical.config.Sort;
 import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
 import org.apache.drill.exec.proto.helper.QueryIdHelper;
 import org.apache.hadoop.conf.Configuration;
@@ -63,7 +68,7 @@ public class SpillSet {
 
     void deleteOnExit(String fragmentSpillDir) throws IOException;
 
-    OutputStream createForWrite(String fileName) throws IOException;
+    WritableByteChannel createForWrite(String fileName) throws IOException;
 
     InputStream openForInput(String fileName) throws IOException;
 
@@ -75,16 +80,16 @@ public class SpillSet {
      * Given a manager-specific output stream, return the current write position.
      * Used to report total write bytes.
      *
-     * @param outputStream output stream created by the file manager
+     * @param channel created by the file manager
      * @return
      */
-    long getWriteBytes(OutputStream outputStream);
+    long getWriteBytes(WritableByteChannel channel);
 
     /**
      * Given a manager-specific input stream, return the current read position.
      * Used to report total read bytes.
      *
-     * @param outputStream input stream created by the file manager
+     * @param inputStream input stream created by the file manager
      * @return
      */
     long getReadBytes(InputStream inputStream);
@@ -102,9 +107,17 @@ public class SpillSet {
      * nodes provide insufficient local disk space)
      */
 
+    // The buffer size is calculated as LCM of the Hadoop internal checksum buffer (9 * checksum length), where
+    // checksum length is 512 by default, and MapRFS page size that equals to 8 * 1024. The length of the transfer
+    // buffer does not affect performance of the write to hdfs or maprfs significantly once buffer length is more
+    // than 32 bytes.
+    private static final int TRANSFER_SIZE = 9 * 8 * 1024;
+
+    private final byte buffer[];
     private FileSystem fs;
 
     protected HadoopFileManager(String fsName) {
+      buffer = new byte[TRANSFER_SIZE];
       Configuration conf = new Configuration();
       conf.set(FileSystem.FS_DEFAULT_NAME_KEY, fsName);
       try {
@@ -122,8 +135,8 @@ public class SpillSet {
     }
 
     @Override
-    public OutputStream createForWrite(String fileName) throws IOException {
-      return fs.create(new Path(fileName));
+    public WritableByteChannel createForWrite(String fileName) throws IOException {
+      return new WritableByteChannelImpl(buffer, fs.create(new Path(fileName)));
     }
 
     @Override
@@ -150,10 +163,10 @@ public class SpillSet {
     }
 
     @Override
-    public long getWriteBytes(OutputStream outputStream) {
+    public long getWriteBytes(WritableByteChannel channel) {
       try {
-        return ((FSDataOutputStream) outputStream).getPos();
-      } catch (IOException e) {
+        return ((FSDataOutputStream)((WritableByteChannelImpl)channel).out).getPos();
+      } catch (Exception e) {
         // Just used for logging, not worth dealing with the exception.
         return 0;
       }
@@ -281,7 +294,7 @@ public class SpillSet {
     private File baseDir;
 
     public LocalFileManager(String fsName) {
-      baseDir = new File(fsName.replace("file://", ""));
+      baseDir = new File(fsName.replace(FileSystem.DEFAULT_FS, ""));
     }
 
     @Override
@@ -293,10 +306,8 @@ public class SpillSet {
 
     @SuppressWarnings("resource")
     @Override
-    public OutputStream createForWrite(String fileName) throws IOException {
-      return new CountingOutputStream(
-                new BufferedOutputStream(
-                    new FileOutputStream(new File(baseDir, fileName))));
+    public WritableByteChannel createForWrite(String fileName) throws IOException {
+      return FileChannel.open(new File(baseDir, fileName).toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
     }
 
     @SuppressWarnings("resource")
@@ -314,17 +325,61 @@ public class SpillSet {
 
     @Override
     public void deleteDir(String fragmentSpillDir) throws IOException {
-      new File(baseDir, fragmentSpillDir).delete();
+      boolean deleted = new File(baseDir, fragmentSpillDir).delete();
+      if ( ! deleted ) { throw new IOException("Failed to delete: " + fragmentSpillDir);}
     }
 
     @Override
-    public long getWriteBytes(OutputStream outputStream) {
-      return ((CountingOutputStream) outputStream).getCount();
+    public long getWriteBytes(WritableByteChannel channel)
+    {
+      try {
+        return ((FileChannel)channel).position();
+      } catch (Exception e) {
+        return 0;
+      }
     }
 
     @Override
     public long getReadBytes(InputStream inputStream) {
       return ((CountingInputStream) inputStream).getCount();
+    }
+  }
+
+  private static class WritableByteChannelImpl implements WritableByteChannel
+  {
+    private final byte buffer[];
+    private OutputStream out;
+
+    WritableByteChannelImpl(byte[] buffer, OutputStream out) {
+      this.buffer = buffer;
+      this.out = out;
+    }
+
+    @Override
+    public int write(ByteBuffer src) throws IOException {
+      int remaining = src.remaining();
+      int totalWritten = 0;
+      synchronized (buffer) {
+        for (int posn = 0; posn < remaining; posn += buffer.length) {
+          int len = Math.min(buffer.length, remaining - posn);
+          src.get(buffer, 0, len);
+          out.write(buffer, 0, len);
+          totalWritten += len;
+        }
+      }
+      return totalWritten;
+    }
+
+    @Override
+    public boolean isOpen()
+    {
+      return out != null;
+    }
+
+    @Override
+    public void close() throws IOException {
+      out.close();
+      out = null;
     }
   }
 
@@ -346,7 +401,6 @@ public class SpillSet {
    */
 
   private final String spillDirName;
-  private final String spillFileName;
 
   private int fileCount = 0;
 
@@ -357,15 +411,34 @@ public class SpillSet {
   private long writeBytes;
 
   public SpillSet(FragmentContext context, PhysicalOperator popConfig) {
-    this(context, popConfig, null, "spill");
+    this(context.getConfig(), context.getHandle(), popConfig);
   }
 
-  public SpillSet(FragmentContext context, PhysicalOperator popConfig,
-                  String opName, String fileName) {
-    FragmentHandle handle = context.getHandle();
-    DrillConfig config = context.getConfig();
-    spillFileName = fileName;
-    List<String> dirList = config.getStringList(ExecConstants.EXTERNAL_SORT_SPILL_DIRS);
+  public SpillSet(DrillConfig config, FragmentHandle handle, PhysicalOperator popConfig) {
+    String operName;
+
+    // Set the spill options from the configuration
+    String spillFs;
+    List<String> dirList;
+
+    // Set the operator name (used as part of the spill file name),
+    // and set oper. specific options (the config file defaults to using the
+    // common options; users may override those - per operator)
+    if (popConfig instanceof Sort) {
+        operName = "Sort";
+        spillFs = config.getString(ExecConstants.EXTERNAL_SORT_SPILL_FILESYSTEM);
+        dirList = config.getStringList(ExecConstants.EXTERNAL_SORT_SPILL_DIRS);
+    } else if (popConfig instanceof HashAggregate) {
+        operName = "HashAgg";
+        spillFs = config.getString(ExecConstants.HASHAGG_SPILL_FILESYSTEM);
+        dirList = config.getStringList(ExecConstants.HASHAGG_SPILL_DIRS);
+    } else {
+        // just use the common ones
+        operName = "Unknown";
+        spillFs = config.getString(ExecConstants.SPILL_FILESYSTEM);
+        dirList = config.getStringList(ExecConstants.SPILL_DIRS);
+    }
+
     dirs = Iterators.cycle(dirList);
 
     // If more than one directory, semi-randomly choose an offset into
@@ -386,23 +459,23 @@ public class SpillSet {
     // system is selected and impersonation is off. (We use that
     // as a proxy for a non-production Drill setup.)
 
-    String spillFs = config.getString(ExecConstants.EXTERNAL_SORT_SPILL_FILESYSTEM);
     boolean impersonationEnabled = config.getBoolean(ExecConstants.IMPERSONATION_ENABLED);
-    if (spillFs.startsWith("file:///") && ! impersonationEnabled) {
+    if (spillFs.startsWith(FileSystem.DEFAULT_FS) && ! impersonationEnabled) {
       fileManager = new LocalFileManager(spillFs);
     } else {
       fileManager = new HadoopFileManager(spillFs);
     }
-    spillDirName = String.format(
-        "%s_major%d_minor%d_op%d%s",
+
+    spillDirName = String.format("%s_%s_%s-%s-%s",
         QueryIdHelper.getQueryId(handle.getQueryId()),
-        handle.getMajorFragmentId(),
-        handle.getMinorFragmentId(),
-        popConfig.getOperatorId(),
-        (opName == null) ? "" : "_" + opName);
+        operName, handle.getMajorFragmentId(), popConfig.getOperatorId(), handle.getMinorFragmentId());
   }
 
   public String getNextSpillFile() {
+    return getNextSpillFile(null);
+  }
+
+  public String getNextSpillFile(String extraName) {
 
     // Identify the next directory from the round-robin list to
     // the file created from this round of spilling. The directory must
@@ -411,7 +484,12 @@ public class SpillSet {
     String spillDir = dirs.next();
     String currSpillPath = Joiner.on("/").join(spillDir, spillDirName);
     currSpillDirs.add(currSpillPath);
-    String outputFile = Joiner.on("/").join(currSpillPath, spillFileName + ++fileCount);
+
+    String outputFile = Joiner.on("/").join(currSpillPath, "spill" + ++fileCount);
+    if (extraName != null) {
+      outputFile += "_" + extraName;
+    }
+
     try {
         fileManager.deleteOnExit(currSpillPath);
     } catch (IOException e) {
@@ -431,7 +509,7 @@ public class SpillSet {
     return fileManager.openForInput(fileName);
   }
 
-  public OutputStream openForOutput(String fileName) throws IOException {
+  public WritableByteChannel openForOutput(String fileName) throws IOException {
     return fileManager.createForWrite(fileName);
   }
 
@@ -450,6 +528,7 @@ public class SpillSet {
           // since this is meant to be used in a batches's cleanup, we don't propagate the exception
           logger.warn("Unable to delete spill directory " + path,  e);
       }
+      currSpillDirs.clear(); // in case close() is called again
     }
   }
 
@@ -457,8 +536,8 @@ public class SpillSet {
     return fileManager.getReadBytes(inputStream);
   }
 
-  public long getPosition(OutputStream outputStream) {
-    return fileManager.getWriteBytes(outputStream);
+  public long getPosition(WritableByteChannel channel) {
+    return fileManager.getWriteBytes(channel);
   }
 
   public void tallyReadBytes(long readLength) {
@@ -467,5 +546,14 @@ public class SpillSet {
 
   public void tallyWriteBytes(long writeLength) {
     writeBytes += writeLength;
+  }
+
+  public VectorSerializer.Writer writer(String fileName) throws IOException {
+    return VectorSerializer.writer(openForOutput(fileName));
+  }
+
+  public void close(VectorSerializer.Writer writer) throws IOException {
+    tallyWriteBytes(writer.getBytesWritten());
+    writer.close();
   }
 }

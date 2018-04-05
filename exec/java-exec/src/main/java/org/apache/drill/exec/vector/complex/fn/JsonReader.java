@@ -80,95 +80,88 @@ public class JsonReader extends BaseJsonProcessor {
 
   private FieldSelection selection;
 
-  public JsonReader(DrillBuf managedBuf, boolean allTextMode,
-      boolean skipOuterList, boolean readNumbersAsDouble) {
-    this(managedBuf, GroupScan.ALL_COLUMNS, allTextMode, skipOuterList,
-        readNumbersAsDouble);
+  private JsonReader(Builder builder) {
+    super(builder.managedBuf, builder.enableNanInf);
+    selection = FieldSelection.getFieldSelection(builder.columns);
+    workingBuffer = builder.workingBuffer;
+    skipOuterList = builder.skipOuterList;
+    allTextMode = builder.allTextMode;
+    columns = builder.columns;
+    mapOutput = builder.mapOutput;
+    listOutput = builder.listOutput;
+    currentFieldName = builder.currentFieldName;
+    readNumbersAsDouble = builder.readNumbersAsDouble;
   }
 
-  public JsonReader(DrillBuf managedBuf, List<SchemaPath> columns,
-      boolean allTextMode, boolean skipOuterList, boolean readNumbersAsDouble) {
-    super(managedBuf);
-    assert Preconditions.checkNotNull(columns).size() > 0 : "JSON record reader requires at least one column";
-    this.selection = FieldSelection.getFieldSelection(columns);
-    this.workingBuffer = new WorkingBuffer(managedBuf);
-    this.skipOuterList = skipOuterList;
-    this.allTextMode = allTextMode;
-    this.columns = columns;
-    this.mapOutput = new MapVectorOutput(workingBuffer);
-    this.listOutput = new ListVectorOutput(workingBuffer);
-    this.currentFieldName = "<none>";
-    this.readNumbersAsDouble = readNumbersAsDouble;
+  public static class Builder {
+    private  DrillBuf managedBuf;
+    private  WorkingBuffer workingBuffer;
+    private  List<SchemaPath> columns;
+    private  MapVectorOutput mapOutput;
+    private  ListVectorOutput listOutput;
+    private  String currentFieldName = "<none>";
+    private  boolean readNumbersAsDouble;
+    private  boolean skipOuterList;
+    private  boolean allTextMode;
+    private  boolean enableNanInf;
+
+
+    public Builder(DrillBuf managedBuf) {
+      this.managedBuf = managedBuf;
+      this.workingBuffer = new WorkingBuffer(managedBuf);
+      this.mapOutput = new MapVectorOutput(workingBuffer);
+      this.listOutput = new ListVectorOutput(workingBuffer);
+      this.readNumbersAsDouble = false;
+      this.skipOuterList = false;
+      this.allTextMode = false;
+      this.enableNanInf = true;
+    }
+
+    public Builder readNumbersAsDouble(boolean readNumbersAsDouble) {
+      this.readNumbersAsDouble = readNumbersAsDouble;
+      return this;
+    }
+
+    public Builder skipOuterList(boolean skipOuterList) {
+      this.skipOuterList = skipOuterList;
+      return this;
+    }
+
+    public Builder allTextMode(boolean allTextMode) {
+      this.allTextMode = allTextMode;
+      return this;
+    }
+
+    public Builder enableNanInf(boolean enableNanInf) {
+      this.enableNanInf = enableNanInf;
+      return this;
+    }
+
+    public Builder defaultSchemaPathColumns() {
+      this.columns = GroupScan.ALL_COLUMNS;
+      return this;
+    }
+
+    public Builder schemaPathColumns(List<SchemaPath> columns) {
+      this.columns = columns;
+      return this;
+    }
+
+    public JsonReader build() {
+      if (columns == null) {
+        throw new IllegalStateException("You need to set SchemaPath columns in order to build JsonReader");
+      }
+      assert Preconditions.checkNotNull(columns).size() > 0 : "JSON record reader requires at least one column";
+      return new JsonReader(this);
+    }
   }
+
+
 
   @SuppressWarnings("resource")
   @Override
   public void ensureAtLeastOneField(ComplexWriter writer) {
-    List<BaseWriter.MapWriter> writerList = Lists.newArrayList();
-    List<PathSegment> fieldPathList = Lists.newArrayList();
-    BitSet emptyStatus = new BitSet(columns.size());
-
-    // first pass: collect which fields are empty
-    for (int i = 0; i < columns.size(); i++) {
-      SchemaPath sp = columns.get(i);
-      PathSegment fieldPath = sp.getRootSegment();
-      BaseWriter.MapWriter fieldWriter = writer.rootAsMap();
-      while (fieldPath.getChild() != null && !fieldPath.getChild().isArray()) {
-        fieldWriter = fieldWriter.map(fieldPath.getNameSegment().getPath());
-        fieldPath = fieldPath.getChild();
-      }
-      writerList.add(fieldWriter);
-      fieldPathList.add(fieldPath);
-      if (fieldWriter.isEmptyMap()) {
-        emptyStatus.set(i, true);
-      }
-      if (i == 0 && !allTextMode) {
-        // when allTextMode is false, there is not much benefit to producing all
-        // the empty
-        // fields; just produce 1 field. The reason is that the type of the
-        // fields is
-        // unknown, so if we produce multiple Integer fields by default, a
-        // subsequent batch
-        // that contains non-integer fields will error out in any case. Whereas,
-        // with
-        // allTextMode true, we are sure that all fields are going to be treated
-        // as varchar,
-        // so it makes sense to produce all the fields, and in fact is necessary
-        // in order to
-        // avoid schema change exceptions by downstream operators.
-        break;
-      }
-
-    }
-
-    // second pass: create default typed vectors corresponding to empty fields
-    // Note: this is not easily do-able in 1 pass because the same fieldWriter
-    // may be
-    // shared by multiple fields whereas we want to keep track of all fields
-    // independently,
-    // so we rely on the emptyStatus.
-    for (int j = 0; j < fieldPathList.size(); j++) {
-      BaseWriter.MapWriter fieldWriter = writerList.get(j);
-      PathSegment fieldPath = fieldPathList.get(j);
-      if (emptyStatus.get(j)) {
-        if (allTextMode) {
-          fieldWriter.varChar(fieldPath.getNameSegment().getPath());
-        } else {
-          fieldWriter.integer(fieldPath.getNameSegment().getPath());
-        }
-      }
-    }
-
-    for (ListWriter field : emptyArrayWriters) {
-      // checks that array has not been initialized
-      if (field.getValueCapacity() == 0) {
-        if (allTextMode) {
-          field.varChar();
-        } else {
-          field.integer();
-        }
-      }
-    }
+    JsonReaderUtils.ensureAtLeastOneField(writer, columns, allTextMode, emptyArrayWriters);
   }
 
   public void setSource(int start, int end, DrillBuf buf) throws IOException {

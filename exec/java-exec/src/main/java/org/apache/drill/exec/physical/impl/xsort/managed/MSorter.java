@@ -30,8 +30,9 @@ import org.apache.drill.exec.record.selection.SelectionVector4;
  */
 
 public interface MSorter {
-  public void setup(FragmentContext context, BufferAllocator allocator, SelectionVector4 vector4, VectorContainer hyperBatch, int outputBatchSize) throws SchemaChangeException;
-  public void sort(VectorContainer container);
+  public void setup(FragmentContext context, BufferAllocator allocator, SelectionVector4 vector4,
+                    VectorContainer hyperBatch, int outputBatchSize, int desiredBatchSize) throws SchemaChangeException;
+  public void sort();
   public SelectionVector4 getSV4();
 
   public static TemplateClassDefinition<MSorter> TEMPLATE_DEFINITION = new TemplateClassDefinition<MSorter>(MSorter.class, MSortTemplate.class);

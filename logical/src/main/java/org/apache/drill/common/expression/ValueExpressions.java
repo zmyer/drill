@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.util.GregorianCalendar;
 import java.util.Iterator;
 
+import com.google.common.collect.ImmutableList;
 import org.apache.drill.common.expression.visitors.ExprVisitor;
 import org.apache.drill.common.types.TypeProtos.DataMode;
 import org.apache.drill.common.types.TypeProtos.MajorType;
@@ -51,8 +52,8 @@ public class ValueExpressions {
     return new BooleanExpression(Boolean.toString(b), ExpressionPosition.UNKNOWN);
   }
 
-  public static LogicalExpression getChar(String s){
-    return new QuotedString(s, ExpressionPosition.UNKNOWN);
+  public static LogicalExpression getChar(String s, int precision){
+    return new QuotedString(s, precision, ExpressionPosition.UNKNOWN);
   }
 
   public static LogicalExpression getDate(GregorianCalendar date) {
@@ -133,6 +134,10 @@ public class ValueExpressions {
     throw new IllegalArgumentException(String.format("Unable to parse string %s as integer or floating point number.",
         numStr));
 
+  }
+
+  public static LogicalExpression getParameterExpression(String name, MajorType type) {
+    return new ParameterExpression(name, type, ExpressionPosition.UNKNOWN);
   }
 
   protected static abstract class ValueExpression<V> extends LogicalExpressionBase {
@@ -650,10 +655,13 @@ public class ValueExpressions {
 
   public static class QuotedString extends ValueExpression<String> {
 
-    private static final MajorType QUOTED_STRING_CONSTANT = Types.required(MinorType.VARCHAR);
+    public static final QuotedString EMPTY_STRING = new QuotedString("", 0, ExpressionPosition.UNKNOWN);
 
-    public QuotedString(String value, ExpressionPosition pos) {
+    private final int precision;
+
+    public QuotedString(String value, int precision, ExpressionPosition pos) {
       super(value, pos);
+      this.precision = precision;
     }
 
     public String getString() {
@@ -667,12 +675,46 @@ public class ValueExpressions {
 
     @Override
     public MajorType getMajorType() {
-      return QUOTED_STRING_CONSTANT;
+      return Types.withPrecision(MinorType.VARCHAR, DataMode.REQUIRED, precision);
     }
 
     @Override
     public <T, V, E extends Exception> T accept(ExprVisitor<T, V, E> visitor, V value) throws E {
       return visitor.visitQuotedStringConstant(this, value);
+    }
+  }
+
+  /**
+   * Is used to identify method parameter based on given name and type.
+   */
+  public static class ParameterExpression extends LogicalExpressionBase {
+
+    private final String name;
+    private final MajorType type;
+
+    protected ParameterExpression(String name, MajorType type, ExpressionPosition pos) {
+      super(pos);
+      this.name = name;
+      this.type = type;
+    }
+
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public MajorType getMajorType() {
+      return type;
+    }
+
+    @Override
+    public <T, V, E extends Exception> T accept(ExprVisitor<T, V, E> visitor, V value) throws E {
+      return visitor.visitParameter(this, value);
+    }
+
+    @Override
+    public Iterator<LogicalExpression> iterator() {
+      return ImmutableList.<LogicalExpression>of().iterator();
     }
   }
 

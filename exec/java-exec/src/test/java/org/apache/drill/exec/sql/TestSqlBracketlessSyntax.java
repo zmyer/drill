@@ -18,11 +18,12 @@
 package org.apache.drill.exec.sql;
 
 import org.apache.calcite.config.Lex;
-import org.apache.calcite.jdbc.SimpleCalciteSchema;
+import org.apache.calcite.jdbc.CalciteSchema;
 import org.apache.calcite.tools.FrameworkConfig;
 import org.apache.calcite.tools.Frameworks;
 import org.apache.calcite.tools.Planner;
 
+import org.apache.drill.categories.SqlTest;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
 import org.apache.drill.exec.planner.sql.DrillConvertletTable;
 import org.apache.drill.exec.planner.sql.parser.CompoundIdentifierConverter;
@@ -31,7 +32,9 @@ import org.apache.drill.test.DrillAssert;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.parser.SqlParser;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
+@Category(SqlTest.class)
 public class TestSqlBracketlessSyntax {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(TestSqlBracketlessSyntax.class);
 
@@ -43,7 +46,7 @@ public class TestSqlBracketlessSyntax {
             .setIdentifierMaxLength(PlannerSettings.DEFAULT_IDENTIFIER_MAX_LENGTH)
             .setParserFactory(DrillParserImpl.FACTORY)
             .build()) //
-        .defaultSchema(SimpleCalciteSchema.createRootSchema(false)) //
+        .defaultSchema(CalciteSchema.createRootSchema(false, false).plus()) //
         .convertletTable(DrillConvertletTable.INSTANCE) //
         .build();
     Planner planner = Frameworks.getPlanner(config);

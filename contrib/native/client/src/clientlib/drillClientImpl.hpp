@@ -41,9 +41,11 @@
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/function.hpp>
 #include <boost/thread.hpp>
-
 #include "drill/drillClient.hpp"
+#include "drill/drillConfig.hpp"
+#include "drill/drillError.hpp"
 #include "drill/preparedStatement.hpp"
+#include "channel.hpp"
 #include "collectionsImpl.hpp"
 #include "metadata.hpp"
 #include "rpcMessage.hpp"
@@ -109,15 +111,16 @@ class DrillClientImplBase{
 class DrillClientQueryHandle{
     friend class DrillClientImpl;
     public:
-    DrillClientQueryHandle(DrillClientImpl& client, int32_t coordId, const std::string& query, void* context):
+        DrillClientQueryHandle(DrillClientImpl& client, int32_t coordId, const std::string& query, void* context, int in_expectedRPCType) :
         m_client(client),
         m_coordinationId(coordId),
         m_query(query),
-		m_status(QRY_SUCCESS),
+        m_status(QRY_SUCCESS),
         m_bCancel(false),
         m_bHasError(false),
+        m_expectedRPCType(in_expectedRPCType),
         m_pError(NULL),
-		m_pApplicationContext(context){
+        m_pApplicationContext(context){
     };
 
     virtual ~DrillClientQueryHandle(){
@@ -137,7 +140,7 @@ class DrillClientQueryHandle{
     void setQueryStatus(status_t s){ m_status = s;}
     status_t getQueryStatus() const { return m_status;}
     inline DrillClientImpl& client() const { return m_client; };
-
+    int getExpectedRPCType() const { return m_expectedRPCType; };
     inline void* getApplicationContext() const { return m_pApplicationContext; }
 
     protected:
@@ -153,7 +156,7 @@ class DrillClientQueryHandle{
     status_t m_status;
     bool m_bCancel;
     bool m_bHasError;
-
+    int m_expectedRPCType;
     const DrillClientError* m_pError;
 
     void* m_pApplicationContext;
@@ -163,9 +166,9 @@ template<typename Listener, typename ListenerValue>
 class DrillClientBaseHandle: public DrillClientQueryHandle {
     friend class DrillClientImpl;
     public:
-    DrillClientBaseHandle(DrillClientImpl& client, int32_t coordId, const std::string& query, Listener listener, void* context):
-    	DrillClientQueryHandle(client, coordId, query, context),
-		m_pApplicationListener(listener){
+        DrillClientBaseHandle(DrillClientImpl& client, int32_t coordId, const std::string& query, Listener listener, void* context, int in_expectedRPCType) :
+            DrillClientQueryHandle(client, coordId, query, context, in_expectedRPCType),
+            m_pApplicationListener(listener){
     };
 
     virtual ~DrillClientBaseHandle(){
@@ -179,7 +182,6 @@ class DrillClientBaseHandle: public DrillClientQueryHandle {
     virtual status_t notifyListener(ListenerValue v, DrillClientError* pErr);
 
     virtual void signalError(DrillClientError* pErr);
-    void setHasError(bool hasError) { m_bHasError = hasError; }
 
     private:
     Listener m_pApplicationListener;
@@ -189,7 +191,7 @@ class DrillClientQueryResult: public DrillClientBaseHandle<pfnQueryResultsListen
     friend class DrillClientImpl;
     public:
     DrillClientQueryResult(DrillClientImpl& client, int32_t coordId, const std::string& query, pfnQueryResultsListener listener, void* listenerCtx):
-    	DrillClientBaseHandle<pfnQueryResultsListener, RecordBatch*>(client, coordId, query, listener, listenerCtx),
+        DrillClientBaseHandle<pfnQueryResultsListener, RecordBatch*>(client, coordId, query, listener, listenerCtx, exec::user::QUERY_HANDLE),
         m_numBatches(0),
         m_columnDefs(new std::vector<Drill::FieldMetadata*>),
         m_bIsQueryPending(true),
@@ -288,8 +290,8 @@ class DrillClientQueryResult: public DrillClientBaseHandle<pfnQueryResultsListen
 class DrillClientPrepareHandle: public DrillClientBaseHandle<pfnPreparedStatementListener, PreparedStatement*>, public PreparedStatement {
     public:
     DrillClientPrepareHandle(DrillClientImpl& client, int32_t coordId, const std::string& query, pfnPreparedStatementListener listener, void* listenerCtx):
-    	DrillClientBaseHandle<pfnPreparedStatementListener, PreparedStatement*>(client, coordId, query, listener, listenerCtx),
-		PreparedStatement(),
+        DrillClientBaseHandle<pfnPreparedStatementListener, PreparedStatement*>(client, coordId, query, listener, listenerCtx, exec::user::PREPARED_STATEMENT),
+        PreparedStatement(),
         m_columnDefs(new std::vector<Drill::FieldMetadata*>) {
     };
 
@@ -311,8 +313,8 @@ class DrillClientPrepareHandle: public DrillClientBaseHandle<pfnPreparedStatemen
 typedef status_t (*pfnServerMetaListener)(void* ctx, const exec::user::ServerMeta* serverMeta, DrillClientError* err);
 class DrillClientServerMetaHandle: public DrillClientBaseHandle<pfnServerMetaListener, const exec::user::ServerMeta*> {
     public:
-	DrillClientServerMetaHandle(DrillClientImpl& client, int32_t coordId, pfnServerMetaListener listener, void* listenerCtx):
-    	DrillClientBaseHandle<pfnServerMetaListener, const exec::user::ServerMeta*>(client, coordId, "server meta", listener, listenerCtx) {
+    DrillClientServerMetaHandle(DrillClientImpl& client, int32_t coordId, pfnServerMetaListener listener, void* listenerCtx):
+        DrillClientBaseHandle<pfnServerMetaListener, const exec::user::ServerMeta*>(client, coordId, "server meta", listener, listenerCtx, exec::user::SERVER_META) {
     };
 
     private:
@@ -323,8 +325,8 @@ class DrillClientServerMetaHandle: public DrillClientBaseHandle<pfnServerMetaLis
 template<typename Listener, typename MetaType, typename MetaImpl, typename MetadataResult>
 class DrillClientMetadataResult: public DrillClientBaseHandle<Listener, const DrillCollection<MetaType>*> {
 public:
-    DrillClientMetadataResult(DrillClientImpl& client, int32_t coordId, const std::string& query, Listener listener, void* listenerCtx):
-    	DrillClientBaseHandle<Listener, const DrillCollection<MetaType>*>(client, coordId, query, listener, listenerCtx) {}
+    DrillClientMetadataResult(DrillClientImpl& client, int32_t coordId, const std::string& query, Listener listener, void* listenerCtx, int in_expectedRPCType) :
+        DrillClientBaseHandle<Listener, const DrillCollection<MetaType>*>(client, coordId, query, listener, listenerCtx, in_expectedRPCType) {}
 
     void attachMetadataResult(MetadataResult* result) { this->m_pMetadata.reset(result); }
 
@@ -344,59 +346,65 @@ class DrillClientCatalogResult: public DrillClientMetadataResult<Metadata::pfnCa
     friend class DrillClientImpl;
 public:
     DrillClientCatalogResult(DrillClientImpl& client, int32_t coordId, Metadata::pfnCatalogMetadataListener listener, void* listenerCtx):
-    	DrillClientMetadataResult<Metadata::pfnCatalogMetadataListener, meta::CatalogMetadata, meta::DrillCatalogMetadata, exec::user::GetCatalogsResp>(client, coordId, "getCatalog", listener, listenerCtx) {}
+        DrillClientMetadataResult<Metadata::pfnCatalogMetadataListener, meta::CatalogMetadata, meta::DrillCatalogMetadata, exec::user::GetCatalogsResp>(client, coordId, "getCatalog", listener, listenerCtx, exec::user::CATALOGS) {}
 };
 
 class DrillClientSchemaResult: public DrillClientMetadataResult<Metadata::pfnSchemaMetadataListener, meta::SchemaMetadata, meta::DrillSchemaMetadata, exec::user::GetSchemasResp> {
     friend class DrillClientImpl;
 public:
     DrillClientSchemaResult(DrillClientImpl& client, int32_t coordId, Metadata::pfnSchemaMetadataListener listener, void* listenerCtx):
-    	DrillClientMetadataResult<Metadata::pfnSchemaMetadataListener, meta::SchemaMetadata, meta::DrillSchemaMetadata, exec::user::GetSchemasResp>(client, coordId, "getSchemas", listener, listenerCtx) {}
+        DrillClientMetadataResult<Metadata::pfnSchemaMetadataListener, meta::SchemaMetadata, meta::DrillSchemaMetadata, exec::user::GetSchemasResp>(client, coordId, "getSchemas", listener, listenerCtx, exec::user::SCHEMAS) {}
 };
 
 class DrillClientTableResult: public DrillClientMetadataResult<Metadata::pfnTableMetadataListener, meta::TableMetadata, meta::DrillTableMetadata, exec::user::GetTablesResp> {
     friend class DrillClientImpl;
 public:
     DrillClientTableResult(DrillClientImpl& client, int32_t coordId, Metadata::pfnTableMetadataListener listener, void* listenerCtx):
-    	DrillClientMetadataResult<Metadata::pfnTableMetadataListener, meta::TableMetadata, meta::DrillTableMetadata, exec::user::GetTablesResp>(client, coordId, "getTables", listener, listenerCtx) {}
+        DrillClientMetadataResult<Metadata::pfnTableMetadataListener, meta::TableMetadata, meta::DrillTableMetadata, exec::user::GetTablesResp>(client, coordId, "getTables", listener, listenerCtx, exec::user::TABLES) {}
 };
 
 class DrillClientColumnResult: public DrillClientMetadataResult<Metadata::pfnColumnMetadataListener, meta::ColumnMetadata, meta::DrillColumnMetadata, exec::user::GetColumnsResp> {
     friend class DrillClientImpl;
     public:
     DrillClientColumnResult(DrillClientImpl& client, int32_t coordId, Metadata::pfnColumnMetadataListener listener, void* listenerCtx):
-    	DrillClientMetadataResult<Metadata::pfnColumnMetadataListener, meta::ColumnMetadata, meta::DrillColumnMetadata, exec::user::GetColumnsResp>(client, coordId, "getColumns", listener, listenerCtx) {}
+        DrillClientMetadataResult<Metadata::pfnColumnMetadataListener, meta::ColumnMetadata, meta::DrillColumnMetadata, exec::user::GetColumnsResp>(client, coordId, "getColumns", listener, listenerCtx, exec::user::COLUMNS) {}
 };
 
+// Length Decoder Function Pointer definition
+typedef size_t (DrillClientImpl::*lengthDecoder)(const ByteBuf_t, uint32_t&);
 
 class DrillClientImpl : public DrillClientImplBase{
     public:
         DrillClientImpl():
-            m_coordinationId(1),
             m_handshakeVersion(0),
             m_handshakeStatus(exec::user::SUCCESS),
             m_bIsConnected(false),
             m_saslAuthenticator(NULL),
-    		m_saslResultCode(SASL_OK),
+            m_saslResultCode(SASL_OK),
             m_saslDone(false),
             m_pendingRequests(0),
             m_pError(NULL),
             m_pListenerThread(NULL),
             m_pWork(NULL),
-            m_socket(m_io_service),
+            m_pChannel(NULL),
+            m_pChannelContext(NULL),
             m_deadlineTimer(m_io_service),
             m_heartbeatTimer(m_io_service),
             m_rbuf(NULL),
             m_wbuf(MAX_SOCK_RD_BUFSIZE),
-			m_bIsDirectConnection(false)
+            m_bIsDirectConnection(false)
     {
         m_coordinationId=rand()%1729+1;
+        m_fpCurrentReadMsgHandler = &DrillClientImpl::readMsg;
+        m_fpCurrentSendHandler = &DrillClientImpl::sendSyncPlain;
     };
 
         ~DrillClientImpl(){
-            //TODO: Cleanup.
-            //Free any record batches or buffers remaining
             //Cancel any pending requests
+            m_heartbeatTimer.cancel();
+            m_deadlineTimer.cancel();
+            m_io_service.stop();
+            //Free any record batches or buffers remaining
             //Clear and destroy DrillClientQueryResults vector?
             if(this->m_pWork!=NULL){
                 delete this->m_pWork;
@@ -406,13 +414,19 @@ class DrillClientImpl : public DrillClientImplBase{
                 delete this->m_saslAuthenticator;
                 this->m_saslAuthenticator = NULL;
             }
+            {
+                boost::lock_guard<boost::mutex> lock(m_channelMutex);
+                if (this->m_pChannel != NULL) {
+                    m_pChannel->close();
+                    delete this->m_pChannel;
+                    this->m_pChannel = NULL;
+                }
+                if (this->m_pChannelContext != NULL) {
+                    delete this->m_pChannelContext;
+                    this->m_pChannelContext = NULL;
+                }
+            }
 
-            m_heartbeatTimer.cancel();
-            m_deadlineTimer.cancel();
-            m_io_service.stop();
-            boost::system::error_code ignorederr;
-            m_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignorederr);
-            m_socket.close();
             if(m_rbuf!=NULL){
                 Utils::freeBuffer(m_rbuf, MAX_SOCK_RD_BUFSIZE); m_rbuf=NULL;
             }
@@ -437,6 +451,8 @@ class DrillClientImpl : public DrillClientImplBase{
 
         //Connect via Zookeeper or directly
         connectionStatus_t connect(const char* connStr, DrillUserProperties* props);
+        connectionStatus_t connect(const char* host, const char* port, DrillUserProperties* props);
+
         // test whether the client is active
         bool Active();
         void Close() ;
@@ -456,6 +472,9 @@ class DrillClientImpl : public DrillClientImplBase{
         meta::DrillMetadata* getMetadata();
 
         void freeMetadata(meta::DrillMetadata* metadata);
+
+        static bool clientNeedsAuthentication(const DrillUserProperties* userProperties);
+
 
     private:
         friend class meta::DrillMetadata;
@@ -477,9 +496,10 @@ class DrillClientImpl : public DrillClientImplBase{
         void handleHeartbeatTimeout(const boost::system::error_code & err); // send a heartbeat. If send fails, broadcast error, close connection and bail out.
 
         int32_t getNextCoordinationId(){ return ++m_coordinationId; };
-        // send synchronous messages
-        //connectionStatus_t recvSync(rpc::InBoundRpcMessage& msg);
-        connectionStatus_t sendSync(rpc::OutBoundRpcMessage& msg);
+        // synchronous message send handlers
+        connectionStatus_t sendSyncCommon(rpc::OutBoundRpcMessage& msg);
+        connectionStatus_t sendSyncPlain();
+        connectionStatus_t sendSyncEncrypted();
         // handshake
         connectionStatus_t recvHandshake();
         void handleHandshake(ByteBuf_t b, const boost::system::error_code& err, std::size_t bytes_transferred );
@@ -488,10 +508,16 @@ class DrillClientImpl : public DrillClientImplBase{
         void startMessageListener(); 
         // Query results
         void getNextResult();
-        status_t readMsg(
-                ByteBuf_t _buf,
-                AllocatedBufferPtr* allocatedBuffer,
-                rpc::InBoundRpcMessage& msg);
+        // Read Message Handlers
+        status_t readMsg(const ByteBuf_t inBuf, AllocatedBufferPtr* allocatedBuffer, rpc::InBoundRpcMessage& msg);
+        status_t readAndDecryptMsg(const ByteBuf_t inBuf, AllocatedBufferPtr* allocatedBuffer, rpc::InBoundRpcMessage& msg);
+        status_t readLenBytesFromSocket(const ByteBuf_t bufWithLenField, AllocatedBufferPtr* bufferWithDataAndLenBytes,
+                                        uint32_t& lengthFieldLength, lengthDecoder lengthDecodeHandler);
+        void doReadFromSocket(ByteBuf_t inBuf, size_t bytesToRead, boost::system::error_code& errorCode);
+        void doWriteToSocket(const char* dataPtr, size_t bytesToWrite, boost::system::error_code& errorCode);
+        // Length decode handlers
+        size_t lengthDecode(const ByteBuf_t inBuf, uint32_t& rmsgLen);
+        size_t rpcLengthDecode(const ByteBuf_t inBuf, uint32_t& rmsgLen);
         status_t processQueryResult(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg);
         status_t processQueryData(AllocatedBufferPtr allocatedBuffer, const rpc::InBoundRpcMessage& msg);
         status_t processCancelledQueryResult( exec::shared::QueryId& qid, exec::shared::QueryResult* qr);
@@ -506,10 +532,12 @@ class DrillClientImpl : public DrillClientImplBase{
         status_t processQueryStatusResult( exec::shared::QueryResult* qr,
                 DrillClientQueryResult* pDrillClientQueryResult);
         void handleReadTimeout(const boost::system::error_code & err);
-        void handleRead(ByteBuf_t _buf, const boost::system::error_code & err, size_t bytes_transferred) ;
+        void handleRead(ByteBuf_t inBuf, const boost::system::error_code & err, size_t bytes_transferred) ;
         status_t validateDataMessage(const rpc::InBoundRpcMessage& msg, const exec::shared::QueryData& qd, std::string& valError);
         status_t validateResultMessage(const rpc::InBoundRpcMessage& msg, const exec::shared::QueryResult& qr, std::string& valError);
+        bool validateResultRPCType(DrillClientQueryHandle* pQueryHandle, const rpc::InBoundRpcMessage& msg);
         connectionStatus_t handleConnError(connectionStatus_t status, const std::string& msg);
+        connectionStatus_t handleConnError(DrillClientError* err);
         status_t handleQryCancellation(status_t status, DrillClientQueryResult* pQueryResult);
         status_t handleQryError(status_t status, const std::string& msg, DrillClientQueryHandle* pQueryHandle);
         status_t handleQryError(status_t status, const exec::shared::DrillPBError& e, DrillClientQueryHandle* pQueryHandle);
@@ -540,6 +568,7 @@ class DrillClientImpl : public DrillClientImplBase{
         void finishAuthentication();
 
         void shutdownSocket();
+        bool clientNeedsEncryption(const DrillUserProperties* userProperties);
 
         int32_t m_coordinationId;
         int32_t m_handshakeVersion;
@@ -556,6 +585,14 @@ class DrillClientImpl : public DrillClientImplBase{
         bool m_saslDone;
         boost::mutex m_saslMutex; // mutex to protect m_saslDone
         boost::condition_variable m_saslCv; // to signal completion of SASL exchange
+
+        // Used for encryption and is set when server notifies in first handshake response.
+        EncryptionContext m_encryptionCtxt;
+
+        // Function pointer for read and send handler. By default these are referred to handler for plain message read/send. When encryption is enabled
+        // then after successful handshake these pointers refer to handler for encrypted message read/send over wire.
+        status_t (DrillClientImpl::*m_fpCurrentReadMsgHandler)(ByteBuf_t inBuf, AllocatedBufferPtr* allocatedBuffer, rpc::InBoundRpcMessage& msg);
+        connectionStatus_t (DrillClientImpl::*m_fpCurrentSendHandler)();
 
         std::string m_connectStr; 
 
@@ -581,7 +618,12 @@ class DrillClientImpl : public DrillClientImplBase{
         boost::asio::io_service m_io_service;
         // the work object prevent io_service running out of work
         boost::asio::io_service::work * m_pWork;
-        boost::asio::ip::tcp::socket m_socket;
+
+        // Mutex to protect channel
+        boost::mutex m_channelMutex;
+        Channel* m_pChannel;
+        ChannelContext_t* m_pChannelContext;
+
         boost::asio::deadline_timer m_deadlineTimer; // to timeout async queries that never return
         boost::asio::deadline_timer m_heartbeatTimer; // to send heartbeat messages
 

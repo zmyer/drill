@@ -201,7 +201,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
         // where it would have been passed to context.fail()
         // passing the exception directly to context.fail(e) will let the cleanup process continue instead of stopping
         // right away, this will also make sure we collect any additional exception we may get while cleaning up
-        context.fail(e);
+        context.getExecutorState().fail(e);
       }
     }
   }
@@ -346,9 +346,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
               if (unionTypeEnabled) {
                 this.schema = SchemaUtil.mergeSchemas(schema, incoming.getSchema());
               } else {
-                throw SchemaChangeException.schemaChanged("Schema changes not supported in External Sort. Please enable Union type",
-                    schema,
-                    incoming.getSchema());
+                throw new SchemaChangeException("Schema changes not supported in External Sort. Please enable Union type");
               }
             } else {
               schema = incoming.getSchema();
@@ -475,7 +473,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
           builder.add(rbd);
         }
 
-        builder.build(context, container);
+        builder.build(container);
         sv4 = builder.getSv4();
         mSorter = createNewMSorter();
         mSorter.setup(context, oAllocator, getSelectionVector4(), this.container);
@@ -485,7 +483,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
         mSorter.sort(this.container);
 
         // sort may have prematurely exited due to should continue returning false.
-        if (!context.shouldContinue()) {
+        if (!context.getExecutorState().shouldContinue()) {
           return IterOutcome.STOP;
         }
 
@@ -524,12 +522,12 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
 
     } catch (SchemaChangeException ex) {
       kill(false);
-      context.fail(UserException.unsupportedError(ex)
+      context.getExecutorState().fail(UserException.unsupportedError(ex)
         .message("Sort doesn't currently support sorts with changing schemas").build(logger));
       return IterOutcome.STOP;
     } catch(ClassTransformationException | IOException ex) {
       kill(false);
-      context.fail(ex);
+      context.getExecutorState().fail(ex);
       return IterOutcome.STOP;
     } catch (UnsupportedOperationException e) {
       throw new RuntimeException(e);
@@ -652,7 +650,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
         try {
           Thread.sleep(waitTime * 1000);
         } catch(final InterruptedException e) {
-          if (!context.shouldContinue()) {
+          if (!context.getExecutorState().shouldContinue()) {
             throw e;
           }
         }
@@ -680,7 +678,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
       for (BatchGroup group : batchGroupList) {
         vectors[i++] = group.getValueAccessorById(
             field.getValueClass(),
-            group.getValueVectorId(SchemaPath.getSimplePath(field.getPath())).getFieldIds())
+            group.getValueVectorId(SchemaPath.getSimplePath(field.getName())).getFieldIds())
             .getValueVector();
       }
       cont.add(vectors);
@@ -690,12 +688,13 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
   }
 
   private MSorter createNewMSorter() throws ClassTransformationException, IOException, SchemaChangeException {
-    return createNewMSorter(this.context, this.popConfig.getOrderings(), this, MAIN_MAPPING, LEFT_MAPPING, RIGHT_MAPPING);
+    return createNewMSorter(context, this.popConfig.getOrderings(), this, MAIN_MAPPING, LEFT_MAPPING, RIGHT_MAPPING);
   }
 
-  private MSorter createNewMSorter(FragmentContext context, List<Ordering> orderings, VectorAccessible batch, MappingSet mainMapping, MappingSet leftMapping, MappingSet rightMapping)
-          throws ClassTransformationException, IOException, SchemaChangeException{
-    CodeGenerator<MSorter> cg = CodeGenerator.get(MSorter.TEMPLATE_DEFINITION, context.getFunctionRegistry(), context.getOptions());
+  private MSorter createNewMSorter(FragmentContext context, List<Ordering> orderings, VectorAccessible batch, MappingSet mainMapping, MappingSet leftMapping, MappingSet
+    rightMapping)
+          throws ClassTransformationException, IOException, SchemaChangeException {
+    CodeGenerator<MSorter> cg = CodeGenerator.get(MSorter.TEMPLATE_DEFINITION, context.getOptions());
     ClassGenerator<MSorter> g = cg.getRoot();
     g.setMappingSet(mainMapping);
 
@@ -737,8 +736,8 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
   }
 
   public SingleBatchSorter createNewSorter(FragmentContext context, VectorAccessible batch)
-          throws ClassTransformationException, IOException, SchemaChangeException{
-    CodeGenerator<SingleBatchSorter> cg = CodeGenerator.get(SingleBatchSorter.TEMPLATE_DEFINITION, context.getFunctionRegistry(), context.getOptions());
+          throws ClassTransformationException, IOException, SchemaChangeException {
+    CodeGenerator<SingleBatchSorter> cg = CodeGenerator.get(SingleBatchSorter.TEMPLATE_DEFINITION, context.getOptions());
     cg.plainJavaCapable(true); // This class can generate plain-old Java.
 
     // Uncomment out this line to debug the generated code.
@@ -785,7 +784,7 @@ public class ExternalSortBatch extends AbstractRecordBatch<ExternalSort> {
   private void createCopier(VectorAccessible batch, List<BatchGroup> batchGroupList, VectorContainer outputContainer, boolean spilling) throws SchemaChangeException {
     try {
       if (copier == null) {
-        CodeGenerator<PriorityQueueCopier> cg = CodeGenerator.get(PriorityQueueCopier.TEMPLATE_DEFINITION, context.getFunctionRegistry(), context.getOptions());
+        CodeGenerator<PriorityQueueCopier> cg = CodeGenerator.get(PriorityQueueCopier.TEMPLATE_DEFINITION, context.getOptions());
         cg.plainJavaCapable(true);
         // Uncomment out this line to debug the generated code.
 //        cg.saveCodeForDebugging(true);

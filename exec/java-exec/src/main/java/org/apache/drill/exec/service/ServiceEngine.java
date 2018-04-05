@@ -18,6 +18,7 @@
 package org.apache.drill.exec.service;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
 import io.netty.buffer.PooledByteBufAllocatorL;
 import io.netty.channel.EventLoopGroup;
 
@@ -29,13 +30,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.drill.common.AutoCloseables;
-import org.apache.drill.common.config.DrillConfig;
 import org.apache.drill.common.util.DrillVersionInfo;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.exception.DrillbitStartupException;
 import org.apache.drill.exec.memory.BufferAllocator;
-import org.apache.drill.exec.metrics.DrillMetrics;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
+import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint.State;
 import org.apache.drill.exec.rpc.TransportCheck;
 import org.apache.drill.exec.rpc.control.Controller;
 import org.apache.drill.exec.rpc.control.ControllerImpl;
@@ -44,8 +44,6 @@ import org.apache.drill.exec.rpc.user.UserServer;
 import org.apache.drill.exec.server.BootStrapContext;
 import org.apache.drill.exec.work.WorkManager;
 
-import com.codahale.metrics.Gauge;
-import com.codahale.metrics.MetricRegistry;
 import com.google.common.base.Stopwatch;
 
 public class ServiceEngine implements AutoCloseable {
@@ -63,6 +61,8 @@ public class ServiceEngine implements AutoCloseable {
   private final BufferAllocator userAllocator;
   private final BufferAllocator controlAllocator;
   private final BufferAllocator dataAllocator;
+
+  private int userPort;
 
   public ServiceEngine(final WorkManager manager, final BootStrapContext context,
                        final boolean allowPortHunting, final boolean isDistributedMode)
@@ -84,52 +84,7 @@ public class ServiceEngine implements AutoCloseable {
     intialUserPort = context.getConfig().getInt(ExecConstants.INITIAL_USER_PORT);
     this.allowPortHunting = allowPortHunting;
     this.isDistributedMode = isDistributedMode;
-
-    registerMetrics(context.getMetrics());
   }
-
-  private void registerMetrics(final MetricRegistry registry) {
-    final String prefix = PooledByteBufAllocatorL.METRIC_PREFIX + "rpc.";
-    DrillMetrics.register(prefix + "user.used", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return userAllocator.getAllocatedMemory();
-      }
-    });
-    DrillMetrics.register(prefix + "user.peak", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return userAllocator.getPeakMemoryAllocation();
-      }
-    });
-    DrillMetrics.register(prefix + "bit.control.used", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return controlAllocator.getAllocatedMemory();
-      }
-    });
-    DrillMetrics.register(prefix + "bit.control.peak", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return controlAllocator.getPeakMemoryAllocation();
-      }
-    });
-
-    DrillMetrics.register(prefix + "bit.data.used", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return dataAllocator.getAllocatedMemory();
-      }
-    });
-    DrillMetrics.register(prefix + "bit.data.peak", new Gauge<Long>() {
-      @Override
-      public Long getValue() {
-        return dataAllocator.getPeakMemoryAllocation();
-      }
-    });
-
-  }
-
 
   private static BufferAllocator newAllocator(
       BootStrapContext context, String name, String initReservation, String maxAllocation) {
@@ -143,15 +98,20 @@ public class ServiceEngine implements AutoCloseable {
       throw new DrillbitStartupException("Drillbit is disallowed to bind to loopback address in distributed mode.");
     }
 
-    final int userPort = userServer.bind(intialUserPort, allowPortHunting);
+    userPort = userServer.bind(intialUserPort, allowPortHunting);
     DrillbitEndpoint partialEndpoint = DrillbitEndpoint.newBuilder()
         .setAddress(hostName)
         .setUserPort(userPort)
         .setVersion(DrillVersionInfo.getVersion())
+        .setState(State.STARTUP)
         .build();
 
     partialEndpoint = controller.start(partialEndpoint, allowPortHunting);
     return dataPool.start(partialEndpoint, allowPortHunting);
+  }
+
+  public int getUserPort() {
+    return userPort;
   }
 
   public DataConnectionCreator getDataConnectionCreator(){

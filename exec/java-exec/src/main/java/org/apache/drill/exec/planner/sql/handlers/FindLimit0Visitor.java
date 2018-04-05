@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -41,6 +41,7 @@ import org.apache.drill.exec.expr.TypeHelper;
 import org.apache.drill.exec.ops.OperatorContext;
 import org.apache.drill.exec.physical.base.ScanStats;
 import org.apache.drill.exec.physical.impl.OutputMutator;
+import org.apache.drill.exec.planner.common.DrillRelOptUtil;
 import org.apache.drill.exec.planner.logical.DrillDirectScanRel;
 import org.apache.drill.exec.planner.logical.DrillLimitRel;
 import org.apache.drill.exec.planner.logical.DrillRel;
@@ -49,6 +50,7 @@ import org.apache.drill.exec.record.MaterializedField;
 import org.apache.drill.exec.store.AbstractRecordReader;
 import org.apache.drill.exec.store.direct.DirectGroupScan;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -71,8 +73,11 @@ public class FindLimit0Visitor extends RelShuttleImpl {
       ImmutableSet.<SqlTypeName>builder()
           .add(SqlTypeName.INTEGER, SqlTypeName.BIGINT, SqlTypeName.FLOAT, SqlTypeName.DOUBLE,
               SqlTypeName.VARCHAR, SqlTypeName.BOOLEAN, SqlTypeName.DATE, SqlTypeName.TIME,
-              SqlTypeName.TIMESTAMP, SqlTypeName.INTERVAL_YEAR_MONTH, SqlTypeName.INTERVAL_DAY_TIME,
-              SqlTypeName.CHAR)
+              SqlTypeName.TIMESTAMP, SqlTypeName.INTERVAL_YEAR, SqlTypeName.INTERVAL_YEAR_MONTH,
+              SqlTypeName.INTERVAL_MONTH, SqlTypeName.INTERVAL_DAY, SqlTypeName.INTERVAL_DAY_HOUR,
+              SqlTypeName.INTERVAL_DAY_MINUTE, SqlTypeName.INTERVAL_DAY_SECOND, SqlTypeName.INTERVAL_HOUR,
+              SqlTypeName.INTERVAL_HOUR_MINUTE, SqlTypeName.INTERVAL_HOUR_SECOND, SqlTypeName.INTERVAL_MINUTE,
+              SqlTypeName.INTERVAL_MINUTE_SECOND, SqlTypeName.INTERVAL_SECOND, SqlTypeName.CHAR)
           .build();
 
   /**
@@ -84,23 +89,27 @@ public class FindLimit0Visitor extends RelShuttleImpl {
    */
   public static DrillRel getDirectScanRelIfFullySchemaed(RelNode rel) {
     final List<RelDataTypeField> fieldList = rel.getRowType().getFieldList();
-    final List<SqlTypeName> columnTypes = Lists.newArrayList();
-    final List<TypeProtos.DataMode> dataModes = Lists.newArrayList();
+    final List<TypeProtos.MajorType> columnTypes = Lists.newArrayList();
+
 
     for (final RelDataTypeField field : fieldList) {
       final SqlTypeName sqlTypeName = field.getType().getSqlTypeName();
       if (!TYPES.contains(sqlTypeName)) {
         return null;
       } else {
-        columnTypes.add(sqlTypeName);
-        dataModes.add(field.getType().isNullable() ?
-            TypeProtos.DataMode.OPTIONAL : TypeProtos.DataMode.REQUIRED);
+        final TypeProtos.MajorType.Builder builder = TypeProtos.MajorType.newBuilder()
+            .setMode(field.getType().isNullable() ? TypeProtos.DataMode.OPTIONAL : TypeProtos.DataMode.REQUIRED)
+            .setMinorType(TypeInferenceUtils.getDrillTypeFromCalciteType(sqlTypeName));
+
+        if (TypeInferenceUtils.isScalarStringType(sqlTypeName)) {
+          builder.setPrecision(field.getType().getPrecision());
+        }
+
+        columnTypes.add(builder.build());
       }
     }
-
     final RelTraitSet traits = rel.getTraitSet().plus(DrillRel.DRILL_LOGICAL);
-    final RelDataTypeReader reader = new RelDataTypeReader(rel.getRowType().getFieldNames(), columnTypes,
-        dataModes);
+    final RelDataTypeReader reader = new RelDataTypeReader(rel.getRowType().getFieldNames(), columnTypes);
     return new DrillDirectScanRel(rel.getCluster(), traits,
         new DirectGroupScan(reader, ScanStats.ZERO_RECORD_TABLE), rel.getRowType());
   }
@@ -127,24 +136,9 @@ public class FindLimit0Visitor extends RelShuttleImpl {
     return contains;
   }
 
-  private static boolean isLimit0(RexNode fetch) {
-    if (fetch != null && fetch.isA(SqlKind.LITERAL)) {
-      RexLiteral l = (RexLiteral) fetch;
-      switch (l.getTypeName()) {
-      case BIGINT:
-      case INTEGER:
-      case DECIMAL:
-        if (((long) l.getValue2()) == 0) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
   @Override
   public RelNode visit(LogicalSort sort) {
-    if (isLimit0(sort.fetch)) {
+    if (DrillRelOptUtil.isLimit0(sort.fetch)) {
       contains = true;
       return sort;
     }
@@ -155,7 +149,7 @@ public class FindLimit0Visitor extends RelShuttleImpl {
   @Override
   public RelNode visit(RelNode other) {
     if (other instanceof DrillLimitRel) {
-      if (isLimit0(((DrillLimitRel) other).getFetch())) {
+      if (DrillRelOptUtil.isLimit0(((DrillLimitRel) other).getFetch())) {
         contains = true;
         return other;
       }
@@ -197,25 +191,18 @@ public class FindLimit0Visitor extends RelShuttleImpl {
   public static class RelDataTypeReader extends AbstractRecordReader {
 
     public final List<String> columnNames;
-    public final List<SqlTypeName> columnTypes;
-    public final List<TypeProtos.DataMode> dataModes;
+    public final List<TypeProtos.MajorType> columnTypes;
 
-    public RelDataTypeReader(List<String> columnNames, List<SqlTypeName> columnTypes,
-        List<TypeProtos.DataMode> dataModes) {
-      Preconditions.checkArgument(columnNames.size() == columnTypes.size() &&
-          columnTypes.size() == dataModes.size());
+    public RelDataTypeReader(List<String> columnNames, List<TypeProtos.MajorType> columnTypes) {
+      Preconditions.checkArgument(columnNames.size() == columnTypes.size(), "Number of columns and their types should match");
       this.columnNames = columnNames;
       this.columnTypes = columnTypes;
-      this.dataModes = dataModes;
     }
 
     @Override
     public void setup(OperatorContext context, OutputMutator output) throws ExecutionSetupException {
       for (int i = 0; i < columnNames.size(); i++) {
-        final TypeProtos.MajorType type = TypeProtos.MajorType.newBuilder()
-            .setMode(dataModes.get(i))
-            .setMinorType(TypeInferenceUtils.getDrillTypeFromCalciteType(columnTypes.get(i)))
-            .build();
+        final TypeProtos.MajorType type = columnTypes.get(i);
         final MaterializedField field = MaterializedField.create(columnNames.get(i), type);
         final Class vvClass = TypeHelper.getValueVectorClass(type.getMinorType(), type.getMode());
         try {
@@ -233,6 +220,27 @@ public class FindLimit0Visitor extends RelShuttleImpl {
 
     @Override
     public void close() throws Exception {
+    }
+
+    /**
+     * Represents RelDataTypeReader content as string, used in query plan json.
+     * Example: RelDataTypeReader{columnNames=[col1], columnTypes=[INTERVALYEAR-OPTIONAL]}
+     *
+     * @return string representation of RelDataTypeReader content
+     */
+    @Override
+    public String toString() {
+      StringBuilder builder = new StringBuilder();
+      builder.append("RelDataTypeReader{columnNames=");
+      builder.append(columnNames).append(", columnTypes=");
+      List<String> columnTypesList = new ArrayList<>(columnTypes.size());
+      for (TypeProtos.MajorType columnType : columnTypes) {
+        columnTypesList.add(columnType.getMinorType().toString() + "-" + columnType.getMode().toString());
+      }
+      builder.append(columnTypesList);
+      builder.append("}");
+
+      return builder.toString();
     }
   }
 }

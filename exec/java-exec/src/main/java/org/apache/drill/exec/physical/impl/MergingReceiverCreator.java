@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,7 +21,7 @@ import java.util.List;
 
 import org.apache.drill.common.exceptions.ExecutionSetupException;
 import org.apache.drill.exec.exception.OutOfMemoryException;
-import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.exec.ops.ExecutorFragmentContext;
 import org.apache.drill.exec.physical.config.MergingReceiverPOP;
 import org.apache.drill.exec.physical.impl.mergereceiver.MergingRecordBatch;
 import org.apache.drill.exec.record.RecordBatch;
@@ -31,8 +31,9 @@ import org.apache.drill.exec.work.batch.RawBatchBuffer;
 public class MergingReceiverCreator implements BatchCreator<MergingReceiverPOP> {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(MergingReceiverCreator.class);
 
+  @SuppressWarnings("resource")
   @Override
-  public MergingRecordBatch getBatch(FragmentContext context,
+  public MergingRecordBatch getBatch(ExecutorFragmentContext context,
                               MergingReceiverPOP receiver,
                               List<RecordBatch> children)
       throws ExecutionSetupException, OutOfMemoryException {
@@ -45,6 +46,4 @@ public class MergingReceiverCreator implements BatchCreator<MergingReceiverPOP> 
 
     return new MergingRecordBatch(context, receiver, buffers);
   }
-
-
 }

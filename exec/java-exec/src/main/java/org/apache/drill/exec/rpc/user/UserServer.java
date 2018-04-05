@@ -19,11 +19,17 @@ package org.apache.drill.exec.rpc.user;
 
 import java.io.IOException;
 import java.net.SocketAddress;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
+import javax.net.ssl.SSLEngine;
 import javax.security.sasl.SaslException;
 
 import org.apache.drill.common.config.DrillProperties;
+import org.apache.drill.common.exceptions.DrillException;
 import org.apache.drill.exec.exception.DrillbitStartupException;
 import org.apache.drill.exec.memory.BufferAllocator;
 import org.apache.drill.exec.physical.impl.materialize.QueryWritableBatch;
@@ -44,23 +50,31 @@ import org.apache.drill.exec.rpc.BasicServer;
 import org.apache.drill.exec.rpc.OutOfMemoryHandler;
 import org.apache.drill.exec.rpc.OutboundRpcMessage;
 import org.apache.drill.exec.rpc.ProtobufLengthDecoder;
+import org.apache.drill.exec.rpc.RpcConstants;
 import org.apache.drill.exec.rpc.RpcException;
 import org.apache.drill.exec.rpc.RpcOutcomeListener;
+import org.apache.drill.exec.rpc.UserClientConnection;
 import org.apache.drill.exec.rpc.security.ServerAuthenticationHandler;
 import org.apache.drill.exec.rpc.security.plain.PlainFactory;
 import org.apache.drill.exec.rpc.user.UserServer.BitToUserConnection;
 import org.apache.drill.exec.rpc.user.security.UserAuthenticationException;
 import org.apache.drill.exec.server.BootStrapContext;
+import org.apache.drill.exec.ssl.SSLConfig;
+import org.apache.drill.exec.ssl.SSLConfigBuilder;
 import org.apache.drill.exec.work.user.UserWorker;
 import org.apache.hadoop.security.HadoopKerberosName;
+import org.joda.time.DateTime;
 import org.slf4j.Logger;
 
 import com.google.protobuf.MessageLite;
 
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
@@ -69,7 +83,49 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
   private static final String SERVER_NAME = "Apache Drill Server";
 
   private final UserConnectionConfig config;
+  private final SSLConfig sslConfig;
+  private Channel sslChannel;
   private final UserWorker userWorker;
+  private static final ConcurrentHashMap<BitToUserConnection, BitToUserConnectionConfig> userConnectionMap;
+
+  //Initializing the singleton map during startup
+  static {
+    userConnectionMap = new ConcurrentHashMap<>();
+  }
+
+  /**
+   * Serialize {@link org.apache.drill.exec.proto.UserProtos.BitToUserHandshake} instance without password
+   * @param inbound handshake instance for serialization
+   * @return String of serialized object
+   */
+  private String serializeUserToBitHandshakeWithoutPassword(UserToBitHandshake inbound) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("rpc_version: ");
+    sb.append(inbound.getRpcVersion());
+    sb.append("\ncredentials:\n\t");
+    sb.append(inbound.getCredentials());
+    sb.append("properties:");
+    List<Property> props = inbound.getProperties().getPropertiesList();
+    for (Property p: props) {
+      if (!p.getKey().equalsIgnoreCase("password")) {
+        sb.append("\n\tproperty:\n\t\t");
+        sb.append("key: \"");
+        sb.append(p.getKey());
+        sb.append("\"\n\t\tvalue: \"");
+        sb.append(p.getValue());
+        sb.append("\"");
+      }
+    }
+    sb.append("\nsupport_complex_types: ");
+    sb.append(inbound.getSupportComplexTypes());
+    sb.append("\nsupport_timeout: ");
+    sb.append(inbound.getSupportTimeout());
+    sb.append("sasl_support: ");
+    sb.append(inbound.getSaslSupport());
+    sb.append("\nclient_infos:\n\t");
+    sb.append(inbound.getClientInfos().toString().replace("\n", "\n\t"));
+    return sb.toString();
+  }
 
   public UserServer(BootStrapContext context, BufferAllocator allocator, EventLoopGroup eventLoopGroup,
                     UserWorker worker) throws DrillbitStartupException {
@@ -77,7 +133,49 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
         allocator.getAsByteBufAllocator(),
         eventLoopGroup);
     this.config = new UserConnectionConfig(allocator, context, new UserServerRequestHandler(worker));
+    this.sslChannel = null;
+    try {
+      this.sslConfig = new SSLConfigBuilder()
+          .config(context.getConfig())
+          .mode(SSLConfig.Mode.SERVER)
+          .initializeSSLContext(true)
+          .validateKeyStore(true)
+          .build();
+    } catch (DrillException e) {
+      throw new DrillbitStartupException(e.getMessage(), e.getCause());
+    }
     this.userWorker = worker;
+
+    // Initialize Singleton instance of UserRpcMetrics.
+    ((UserRpcMetrics)UserRpcMetrics.getInstance()).initialize(config.isEncryptionEnabled(), allocator);
+  }
+
+  @Override
+  protected void setupSSL(ChannelPipeline pipe) {
+
+    SSLEngine sslEngine = sslConfig.createSSLEngine(config.getAllocator(), null, 0);
+    // Add SSL handler into pipeline
+    pipe.addFirst(RpcConstants.SSL_HANDLER, new SslHandler(sslEngine));
+    logger.debug("SSL communication between client and server is enabled.");
+    logger.debug(sslConfig.toString());
+
+  }
+
+  @Override
+  protected boolean isSslEnabled() {
+    return sslConfig.isUserSslEnabled();
+  }
+
+  @Override
+  public void setSslChannel(Channel c) {
+    sslChannel = c;
+  }
+
+  @Override
+  protected void closeSSL(){
+    if(isSslEnabled() && sslChannel != null){
+      sslChannel.close();
+    }
   }
 
   @Override
@@ -92,44 +190,11 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
   }
 
   /**
-   * Interface for getting user session properties and interacting with user connection. Separating this interface from
-   * {@link AbstractRemoteConnection} implementation for user connection:
-   * <p><ul>
-   *   <li> Connection is passed to Foreman and Screen operators. Instead passing this interface exposes few details.
-   *   <li> Makes it easy to have wrappers around user connection which can be helpful to tap the messages and data
-   *        going to the actual client.
-   * </ul>
+   * Access to set of active connection details for this instance of the Drillbit
+   * @return Active connection set
    */
-  public interface UserClientConnection {
-    /**
-     * @return User session object.
-     */
-    UserSession getSession();
-
-    /**
-     * Send query result outcome to client. Outcome is returned through <code>listener</code>
-     * @param listener
-     * @param result
-     */
-    void sendResult(RpcOutcomeListener<Ack> listener, QueryResult result);
-
-    /**
-     * Send query data to client. Outcome is returned through <code>listener</code>
-     * @param listener
-     * @param result
-     */
-    void sendData(RpcOutcomeListener<Ack> listener, QueryWritableBatch result);
-
-    /**
-     * Returns the {@link ChannelFuture} which will be notified when this
-     * channel is closed.  This method always returns the same future instance.
-     */
-    ChannelFuture getChannelClosureFuture();
-
-    /**
-     * @return Return the client node address.
-     */
-    SocketAddress getRemoteAddress();
+  public static Set<Entry<BitToUserConnection, BitToUserConnectionConfig>> getUserConnections() {
+    return userConnectionMap.entrySet();
   }
 
   /**
@@ -146,10 +211,15 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
           ? config.getMessageHandler()
           : new ServerAuthenticationHandler<>(config.getMessageHandler(),
           RpcType.SASL_MESSAGE_VALUE, RpcType.SASL_MESSAGE));
+
+      // Increase the connection count here since at this point it means that we already have the TCP connection.
+      // Later when connection fails for any reason then we will decrease the counter based on Netty's connection close
+      // handler.
+      incConnectionCounter();
     }
 
     void disableReadTimeout() {
-      getChannel().pipeline().remove(BasicServer.TIMEOUT_HANDLER);
+      getChannel().pipeline().remove(RpcConstants.TIMEOUT_HANDLER);
     }
 
     void setHandshake(final UserToBitHandshake inbound) {
@@ -237,12 +307,32 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
       cleanup();
       super.close();
     }
+
+    @Override
+    public void incConnectionCounter() {
+      UserRpcMetrics.getInstance().addConnectionCount();
+    }
+
+    @Override
+    public void decConnectionCounter() {
+      UserRpcMetrics.getInstance().decConnectionCount();
+      //Removing entry in connection map (sys table)
+      userConnectionMap.remove(this);
+    }
   }
 
   @Override
   protected BitToUserConnection initRemoteConnection(SocketChannel channel) {
     super.initRemoteConnection(channel);
-    return new BitToUserConnection(channel);
+    return registerAndGetConnection(channel);
+  }
+
+  private BitToUserConnection registerAndGetConnection(SocketChannel channel) {
+    BitToUserConnection bit2userConn = new BitToUserConnection(channel);
+    if (bit2userConn != null) {
+      userConnectionMap.put(bit2userConn, new BitToUserConnectionConfig());
+    }
+    return bit2userConn;
   }
 
   @Override
@@ -265,8 +355,9 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
 
       @Override
       public BitToUserHandshake getHandshakeResponse(UserToBitHandshake inbound) throws Exception {
-        logger.trace("Handling handshake from user to bit. {}", inbound);
-
+        if (logger.isTraceEnabled()) {
+          logger.trace("Handling handshake from user to bit. {}", serializeUserToBitHandshakeWithoutPassword(inbound));
+        }
         // if timeout is unsupported or is set to false, disable timeout.
         if (!inbound.hasSupportTimeout() || !inbound.getSupportTimeout()) {
           connection.disableReadTimeout();
@@ -294,8 +385,21 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
             return respBuilder.build();
           }
 
-          final boolean clientSupportsSasl = inbound.hasSaslSupport() &&
-              (inbound.getSaslSupport().ordinal() >= SaslSupport.SASL_AUTH.ordinal());
+          // If sasl_support field is absent in handshake message then treat the client as < 1.10 client
+          final boolean clientSupportsSasl = inbound.hasSaslSupport();
+
+          // saslSupportOrdinal will be set to UNKNOWN_SASL_SUPPORT, if sasl_support field in handshake is set to a
+          // value which is unknown to this server. We will treat those clients as one which knows SASL protocol.
+          final int saslSupportOrdinal = (clientSupportsSasl) ? inbound.getSaslSupport().ordinal()
+                                                              : SaslSupport.UNKNOWN_SASL_SUPPORT.ordinal();
+
+          // Check if client doesn't support SASL or only supports SASL_AUTH and server has encryption enabled
+          if ((!clientSupportsSasl || saslSupportOrdinal == SaslSupport.SASL_AUTH.ordinal())
+              && config.isEncryptionEnabled()) {
+            throw new UserAuthenticationException("The server doesn't allow client without encryption support." +
+                " Please upgrade your client or talk to your system administrator.");
+          }
+
           if (!clientSupportsSasl) { // for backward compatibility < 1.10
             final String userName = inbound.getCredentials().getUserName();
             if (logger.isTraceEnabled()) {
@@ -335,8 +439,13 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
             }
           }
 
-          // mention server's authentication capabilities
+          // Offer all the configured mechanisms to client. If certain mechanism doesn't support encryption
+          // like PLAIN, those should fail during the SASL handshake negotiation.
           respBuilder.addAllAuthenticationMechanisms(config.getAuthProvider().getAllFactoryNames());
+
+          // set the encrypted flag in handshake message. For older clients this field is optional so will be ignored
+          respBuilder.setEncrypted(connection.isEncryptionEnabled());
+          respBuilder.setMaxWrappedSize(connection.getMaxWrappedSize());
 
           // for now, this means PLAIN credentials will be sent over twice
           // (during handshake and during sasl exchange)
@@ -381,4 +490,36 @@ public class UserServer extends BasicServer<RpcType, BitToUserConnection> {
     return new UserProtobufLengthDecoder(allocator, outOfMemoryHandler);
   }
 
+  /**
+   * User Connection's config for System Table access
+   */
+  public class BitToUserConnectionConfig {
+    private DateTime established;
+    private boolean isAuthEnabled;
+    private boolean isEncryptionEnabled;
+    private boolean isSSLEnabled;
+
+    public BitToUserConnectionConfig() {
+      established = new DateTime(); //Current Joda-based Time
+      isAuthEnabled = config.isAuthEnabled();
+      isEncryptionEnabled = config.isEncryptionEnabled();
+      isSSLEnabled = config.isSSLEnabled();
+    }
+
+    public boolean isAuthEnabled() {
+      return isAuthEnabled;
+    }
+
+    public boolean isEncryptionEnabled() {
+      return isEncryptionEnabled;
+    }
+
+    public boolean isSSLEnabled() {
+      return isSSLEnabled;
+    }
+
+    public DateTime getEstablished() {
+      return established;
+    }
+  }
 }

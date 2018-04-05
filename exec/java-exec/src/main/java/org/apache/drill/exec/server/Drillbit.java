@@ -22,7 +22,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.drill.common.AutoCloseables;
 import org.apache.drill.common.StackTrace;
+import org.apache.drill.common.concurrent.ExtendedLatch;
 import org.apache.drill.common.config.DrillConfig;
+import org.apache.drill.common.map.CaseInsensitiveMap;
 import org.apache.drill.common.scanner.ClassPathScanner;
 import org.apache.drill.common.scanner.persistence.ScanResult;
 import org.apache.drill.exec.ExecConstants;
@@ -31,13 +33,16 @@ import org.apache.drill.exec.coord.ClusterCoordinator.RegistrationHandle;
 import org.apache.drill.exec.coord.zk.ZKClusterCoordinator;
 import org.apache.drill.exec.exception.DrillbitStartupException;
 import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint;
-import org.apache.drill.exec.server.options.OptionManager;
+import org.apache.drill.exec.server.DrillbitStateManager.DrillbitState;
+import org.apache.drill.exec.server.options.OptionDefinition;
 import org.apache.drill.exec.server.options.OptionValue;
-import org.apache.drill.exec.server.options.OptionValue.OptionType;
+import org.apache.drill.exec.server.options.OptionValue.OptionScope;
+import org.apache.drill.exec.server.options.SystemOptionManager;
 import org.apache.drill.exec.server.rest.WebServer;
 import org.apache.drill.exec.service.ServiceEngine;
 import org.apache.drill.exec.store.StoragePluginRegistry;
 import org.apache.drill.exec.store.sys.store.provider.CachingPersistentStoreProvider;
+import org.apache.drill.exec.store.sys.store.provider.InMemoryStoreProvider;
 import org.apache.drill.exec.store.sys.PersistentStoreProvider;
 import org.apache.drill.exec.store.sys.PersistentStoreRegistry;
 import org.apache.drill.exec.store.sys.store.provider.LocalPersistentStoreProvider;
@@ -45,6 +50,7 @@ import org.apache.drill.exec.util.GuavaPatcher;
 import org.apache.drill.exec.work.WorkManager;
 import org.apache.zookeeper.Environment;
 
+import org.apache.drill.exec.proto.CoordinationProtos.DrillbitEndpoint.State;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Stopwatch;
 
@@ -74,49 +80,109 @@ public class Drillbit implements AutoCloseable {
   private final WorkManager manager;
   private final BootStrapContext context;
   private final WebServer webServer;
+  private final int gracePeriod;
+  private DrillbitStateManager stateManager;
+  private boolean quiescentMode;
+  private boolean forcefulShutdown = false;
+
+  public void setQuiescentMode(boolean quiescentMode) {
+    this.quiescentMode = quiescentMode;
+  }
+
+  public void setForcefulShutdown(boolean forcefulShutdown) {
+    this.forcefulShutdown = forcefulShutdown;
+  }
+
+  public RegistrationHandle getRegistrationHandle() {
+    return registrationHandle;
+  }
+
   private RegistrationHandle registrationHandle;
   private volatile StoragePluginRegistry storageRegistry;
+  private final PersistentStoreProvider profileStoreProvider;
+
+  @VisibleForTesting
+  public Drillbit(
+    final DrillConfig config,
+    final RemoteServiceSet serviceSet) throws Exception {
+    this(config, SystemOptionManager.createDefaultOptionDefinitions(), serviceSet, ClassPathScanner.fromPrescan(config));
+  }
 
   @VisibleForTesting
   public Drillbit(
       final DrillConfig config,
+      final CaseInsensitiveMap<OptionDefinition> definitions,
       final RemoteServiceSet serviceSet) throws Exception {
-    this(config, serviceSet, ClassPathScanner.fromPrescan(config));
+    this(config, definitions, serviceSet, ClassPathScanner.fromPrescan(config));
   }
 
   public Drillbit(
-      final DrillConfig config,
-      final RemoteServiceSet serviceSet,
-      final ScanResult classpathScan) throws Exception {
+    final DrillConfig config,
+    final RemoteServiceSet serviceSet,
+    final ScanResult classpathScan) throws Exception {
+    this(config, SystemOptionManager.createDefaultOptionDefinitions(), serviceSet, classpathScan);
+  }
+
+  @SuppressWarnings("resource")
+  @VisibleForTesting
+  public Drillbit(
+    final DrillConfig config,
+    final CaseInsensitiveMap<OptionDefinition> definitions,
+    final RemoteServiceSet serviceSet,
+    final ScanResult classpathScan) throws Exception {
+    gracePeriod = config.getInt(ExecConstants.GRACE_PERIOD);
     final Stopwatch w = Stopwatch.createStarted();
     logger.debug("Construction started.");
-    final boolean allowPortHunting = serviceSet != null;
-    context = new BootStrapContext(config, classpathScan);
+    boolean drillPortHunt = config.getBoolean(ExecConstants.DRILL_PORT_HUNT);
+    boolean bindToLoopbackAddress = config.getBoolean(ExecConstants.ALLOW_LOOPBACK_ADDRESS_BINDING);
+    final boolean allowPortHunting = (serviceSet != null) || drillPortHunt;
+    context = new BootStrapContext(config, definitions, classpathScan);
     manager = new WorkManager(context);
 
-    webServer = new WebServer(context, manager);
-    boolean isDistributedMode = false;
+    webServer = new WebServer(context, manager, this);
+    boolean isDistributedMode = (serviceSet == null) && !bindToLoopbackAddress;
     if (serviceSet != null) {
       coord = serviceSet.getCoordinator();
       storeProvider = new CachingPersistentStoreProvider(new LocalPersistentStoreProvider(config));
     } else {
       coord = new ZKClusterCoordinator(config);
-      storeProvider = new PersistentStoreRegistry(this.coord, config).newPStoreProvider();
-      isDistributedMode = true;
+      storeProvider = new PersistentStoreRegistry<ClusterCoordinator>(this.coord, config).newPStoreProvider();
+    }
+
+    //Check if InMemory Profile Store, else use Default Store Provider
+    if (config.getBoolean(ExecConstants.PROFILES_STORE_INMEMORY)) {
+      profileStoreProvider = new InMemoryStoreProvider(config.getInt(ExecConstants.PROFILES_STORE_CAPACITY));
+      logger.info("Upto {} latest query profiles will be retained in-memory", config.getInt(ExecConstants.PROFILES_STORE_CAPACITY));
+    } else {
+      profileStoreProvider = storeProvider;
     }
 
     engine = new ServiceEngine(manager, context, allowPortHunting, isDistributedMode);
 
+    stateManager = new DrillbitStateManager(DrillbitState.STARTUP);
     logger.info("Construction completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS));
+  }
+
+  public int getUserPort() {
+    return engine.getUserPort();
+  }
+
+  public int getWebServerPort() {
+    return webServer.getPort();
   }
 
   public void run() throws Exception {
     final Stopwatch w = Stopwatch.createStarted();
     logger.debug("Startup begun.");
     coord.start(10000);
+    stateManager.setState(DrillbitState.ONLINE);
     storeProvider.start();
+    if (profileStoreProvider != storeProvider) {
+      profileStoreProvider.start();
+    }
     final DrillbitEndpoint md = engine.start();
-    manager.start(md, engine.getController(), engine.getDataConnectionCreator(), coord, storeProvider);
+    manager.start(md, engine.getController(), engine.getDataConnectionCreator(), coord, storeProvider, profileStoreProvider);
+    @SuppressWarnings("resource")
     final DrillbitContext drillbitContext = manager.getContext();
     storageRegistry = drillbitContext.getStorage();
     storageRegistry.init();
@@ -126,22 +192,51 @@ public class Drillbit implements AutoCloseable {
     registrationHandle = coord.register(md);
     webServer.start();
 
+    // Must start the RM after the above since it needs to read system options.
+
+    drillbitContext.startRM();
+
     Runtime.getRuntime().addShutdownHook(new ShutdownThread(this, new StackTrace()));
     logger.info("Startup completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS));
   }
 
+  /*
+    Wait uninterruptibly
+   */
+  public void waitForGracePeriod() {
+    ExtendedLatch exitLatch = new ExtendedLatch();
+    exitLatch.awaitUninterruptibly(gracePeriod);
+  }
+
+  /*
+
+   */
+  public void shutdown() {
+    this.close();
+  }
+ /*
+  The drillbit is moved into Quiescent state and the drillbit waits for grace period amount of time.
+  Then drillbit moves into draining state and waits for all the queries and fragments to complete.
+  */
   @Override
   public synchronized void close() {
-    // avoid complaints about double closing
-    if (isClosed) {
+    if ( !stateManager.getState().equals(DrillbitState.ONLINE)) {
       return;
     }
     final Stopwatch w = Stopwatch.createStarted();
     logger.debug("Shutdown begun.");
-
-    // wait for anything that is running to complete
-    manager.waitToExit();
-
+    registrationHandle = coord.update(registrationHandle, State.QUIESCENT);
+    stateManager.setState(DrillbitState.GRACE);
+    waitForGracePeriod();
+    stateManager.setState(DrillbitState.DRAINING);
+    // wait for all the in-flight queries to finish
+    manager.waitToExit(forcefulShutdown);
+    //safe to exit
+    registrationHandle = coord.update(registrationHandle, State.OFFLINE);
+    stateManager.setState(DrillbitState.OFFLINE);
+    if(quiescentMode == true) {
+      return;
+    }
     if (coord != null && registrationHandle != null) {
       coord.unregister(registrationHandle);
     }
@@ -164,12 +259,17 @@ public class Drillbit implements AutoCloseable {
           manager,
           storageRegistry,
           context);
+
+      //Closing the profile store provider if distinct
+      if (storeProvider != profileStoreProvider) {
+        AutoCloseables.close(profileStoreProvider);
+      }
     } catch(Exception e) {
       logger.warn("Failure on close()", e);
     }
 
-    logger.info("Shutdown completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS));
-    isClosed = true;
+    logger.info("Shutdown completed ({} ms).", w.elapsed(TimeUnit.MILLISECONDS) );
+    stateManager.setState(DrillbitState.SHUTDOWN);
   }
 
   private void javaPropertiesToSystemOptions() {
@@ -179,7 +279,8 @@ public class Drillbit implements AutoCloseable {
       return;
     }
 
-    final OptionManager optionManager = getContext().getOptionManager();
+    @SuppressWarnings("resource")
+    final SystemOptionManager optionManager = getContext().getOptionManager();
 
     // parse out the properties, validate, and then set them
     final String systemProps[] = allSystemProps.split(",");
@@ -200,16 +301,16 @@ public class Drillbit implements AutoCloseable {
       }
 
       final OptionValue defaultValue = optionManager.getOption(optionName);
+
       if (defaultValue == null) {
         throwInvalidSystemOption(systemProp, "does not specify a valid option name");
       }
-      if (defaultValue.type != OptionType.SYSTEM) {
+
+      if (!defaultValue.accessibleScopes.inScopeOf(OptionScope.SYSTEM)) {
         throwInvalidSystemOption(systemProp, "does not specify a SYSTEM option ");
       }
 
-      final OptionValue optionValue = OptionValue.createOption(
-          defaultValue.kind, OptionType.SYSTEM, optionName, optionString);
-      optionManager.setOption(optionValue);
+      optionManager.setLocalOption(defaultValue.kind, optionName, optionString);
     }
   }
 
@@ -268,21 +369,27 @@ public class Drillbit implements AutoCloseable {
   }
 
   public static Drillbit start(final StartupOptions options) throws DrillbitStartupException {
-    return start(DrillConfig.create(options.getConfigLocation()), null);
+    return start(DrillConfig.create(options.getConfigLocation()), SystemOptionManager.createDefaultOptionDefinitions(), null);
   }
 
   public static Drillbit start(final DrillConfig config) throws DrillbitStartupException {
-    return start(config, null);
+    return start(config, SystemOptionManager.createDefaultOptionDefinitions(), null);
   }
 
-  public static Drillbit start(final DrillConfig config, final RemoteServiceSet remoteServiceSet)
+  public static Drillbit start(final DrillConfig config, final RemoteServiceSet remoteServiceSet) throws DrillbitStartupException {
+    return start(config, SystemOptionManager.createDefaultOptionDefinitions(), remoteServiceSet);
+  }
+
+  @VisibleForTesting
+  public static Drillbit start(final DrillConfig config, final CaseInsensitiveMap<OptionDefinition> validators,
+                               final RemoteServiceSet remoteServiceSet)
       throws DrillbitStartupException {
     logger.debug("Starting new Drillbit.");
     // TODO: allow passing as a parameter
     ScanResult classpathScan = ClassPathScanner.fromPrescan(config);
     Drillbit bit;
     try {
-      bit = new Drillbit(config, remoteServiceSet, classpathScan);
+      bit = new Drillbit(config, validators, remoteServiceSet, classpathScan);
     } catch (final Exception ex) {
       throw new DrillbitStartupException("Failure while initializing values in Drillbit.", ex);
     }

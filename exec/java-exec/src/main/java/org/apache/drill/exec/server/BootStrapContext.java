@@ -31,6 +31,7 @@ import java.util.concurrent.SynchronousQueue;
 import org.apache.drill.common.AutoCloseables;
 import org.apache.drill.common.KerberosUtil;
 import org.apache.drill.common.config.DrillConfig;
+import org.apache.drill.common.map.CaseInsensitiveMap;
 import org.apache.drill.common.scanner.persistence.ScanResult;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.exception.DrillbitStartupException;
@@ -41,6 +42,7 @@ import org.apache.drill.exec.rpc.NamedThreadFactory;
 import org.apache.drill.exec.rpc.TransportCheck;
 import org.apache.drill.exec.rpc.security.AuthenticatorProvider;
 import org.apache.drill.exec.rpc.security.AuthenticatorProviderImpl;
+import org.apache.drill.exec.server.options.OptionDefinition;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -58,12 +60,8 @@ public class BootStrapContext implements AutoCloseable {
   private static final String customHostName = System.getenv("DRILL_HOST_NAME");
   private static final String processUserName = System.getProperty("user.name");
 
-  private static final String SERVICE_LOGIN_PREFIX = "drill.exec.security.auth";
-  public static final String SERVICE_PRINCIPAL = SERVICE_LOGIN_PREFIX + ".principal";
-  public static final String SERVICE_KEYTAB_LOCATION = SERVICE_LOGIN_PREFIX + ".keytab";
-  public static final String KERBEROS_NAME_MAPPING = SERVICE_LOGIN_PREFIX + ".auth_to_local";
-
   private final DrillConfig config;
+  private final CaseInsensitiveMap<OptionDefinition> definitions;
   private final AuthenticatorProvider authProvider;
   private final EventLoopGroup loop;
   private final EventLoopGroup loop2;
@@ -75,8 +73,10 @@ public class BootStrapContext implements AutoCloseable {
   private final ExecutorService scanDecodeExecutor;
   private final String hostName;
 
-  public BootStrapContext(DrillConfig config, ScanResult classpathScan) throws DrillbitStartupException {
+  public BootStrapContext(DrillConfig config, CaseInsensitiveMap<OptionDefinition> definitions,
+                          ScanResult classpathScan) throws DrillbitStartupException {
     this.config = config;
+    this.definitions = definitions;
     this.classpathScan = classpathScan;
     this.hostName = getCanonicalHostName();
     login(config);
@@ -116,32 +116,32 @@ public class BootStrapContext implements AutoCloseable {
 
   private void login(final DrillConfig config) throws DrillbitStartupException {
     try {
-      if (config.hasPath(SERVICE_PRINCIPAL)) {
+      if (config.hasPath(ExecConstants.SERVICE_PRINCIPAL)) {
         // providing a service principal => Kerberos mechanism
         final Configuration loginConf = new Configuration();
         loginConf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTHENTICATION,
             UserGroupInformation.AuthenticationMethod.KERBEROS.toString());
 
         // set optional user name mapping
-        if (config.hasPath(KERBEROS_NAME_MAPPING)) {
+        if (config.hasPath(ExecConstants.KERBEROS_NAME_MAPPING)) {
           loginConf.set(CommonConfigurationKeys.HADOOP_SECURITY_AUTH_TO_LOCAL,
-              config.getString(KERBEROS_NAME_MAPPING));
+              config.getString(ExecConstants.KERBEROS_NAME_MAPPING));
         }
 
         UserGroupInformation.setConfiguration(loginConf);
 
         // service principal canonicalization
-        final String principal = config.getString(SERVICE_PRINCIPAL);
+        final String principal = config.getString(ExecConstants.SERVICE_PRINCIPAL);
         final String parts[] = KerberosUtil.splitPrincipalIntoParts(principal);
         if (parts.length != 3) {
           throw new DrillbitStartupException(
               String.format("Invalid %s, Drill service principal must be of format: primary/instance@REALM",
-                  SERVICE_PRINCIPAL));
+                ExecConstants.SERVICE_PRINCIPAL));
         }
         parts[1] = KerberosUtil.canonicalizeInstanceName(parts[1], hostName);
 
         final String canonicalizedPrincipal = KerberosUtil.getPrincipalFromParts(parts[0], parts[1], parts[2]);
-        final String keytab = config.getString(SERVICE_KEYTAB_LOCATION);
+        final String keytab = config.getString(ExecConstants.SERVICE_KEYTAB_LOCATION);
 
         // login to KDC (AS)
         // Note that this call must happen before any call to UserGroupInformation#getLoginUser,
@@ -188,6 +188,10 @@ public class BootStrapContext implements AutoCloseable {
 
   public DrillConfig getConfig() {
     return config;
+  }
+
+  public CaseInsensitiveMap<OptionDefinition> getDefinitions() {
+    return definitions;
   }
 
   public EventLoopGroup getBitLoopGroup() {
@@ -243,10 +247,32 @@ public class BootStrapContext implements AutoCloseable {
       }
     }
 
+    if (scanExecutor != null) {
+      scanExecutor.shutdown();
+    }
+
+    if (scanDecodeExecutor != null) {
+      scanDecodeExecutor.shutdownNow();
+    }
+
     try {
       AutoCloseables.close(allocator, authProvider);
+      shutdown(loop);
+      shutdown(loop2);
+
     } catch (final Exception e) {
       logger.error("Error while closing", e);
+    }
+  }
+
+  private static void shutdown(EventLoopGroup loopGroup) {
+    if (loopGroup != null && !(loopGroup.isShutdown() || loopGroup.isShuttingDown())) {
+      try {
+        loopGroup.shutdownGracefully();
+
+      } catch (final Exception e) {
+        logger.error("Error while closing", e);
+      }
     }
   }
 }

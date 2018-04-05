@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,6 +20,7 @@ package org.apache.drill.jdbc;
 import static java.sql.ResultSetMetaData.columnNoNulls;
 import static java.sql.ResultSetMetaData.columnNullable;
 import static java.sql.ResultSetMetaData.columnNullableUnknown;
+import static org.apache.drill.exec.util.StoragePluginTestUtils.DFS_TMP_SCHEMA;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.junit.Assert.assertNotNull;
@@ -35,11 +36,12 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
 
-import org.apache.drill.jdbc.test.JdbcAssert;
+import org.apache.drill.categories.JdbcTest;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
 // NOTE: TestInformationSchemaColumns and DatabaseMetaDataGetColumnsTest
 // have identical sections.  (Cross-maintain them for now; factor out later.)
@@ -81,9 +83,8 @@ import org.junit.Test;
  *   Based on JDBC 4.1 (Java 7).
  * </p>
  */
+@Category(JdbcTest.class)
 public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
-
-  private static final String VIEW_SCHEMA = "dfs_test.tmp";
   private static final String VIEW_NAME =
       DatabaseMetaDataGetColumnsTest.class.getSimpleName() + "_View";
 
@@ -127,7 +128,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   private static ResultSet mdrReqCHAR_5;
   // No NCHAR, etc., in Drill (?).
   private static ResultSet mdrOptVARBINARY_16;
-  private static ResultSet mdrOptBINARY_1048576;
+  private static ResultSet mdrOptBINARY_65536;
 
   private static ResultSet mdrReqDATE;
   private static ResultSet mdrReqTIME;
@@ -186,8 +187,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     // (Note: Can't use JdbcTest's connect(...) because JdbcTest closes
     // Connection--and other JDBC objects--on test method failure, but this test
     // class uses some objects across methods.)
-    connection = new Driver().connect( "jdbc:drill:zk=local",
-                                       JdbcAssert.getDefaultProperties() );
+    connection = connect();
     dbMetadata = connection.getMetaData();
 
     setUpMetadataToCheck();
@@ -226,7 +226,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     TODO(DRILL-3253)(end) */
 
     // Create temporary test-columns view:
-    util = stmt.executeQuery( "USE dfs_test.tmp" );
+    util = stmt.executeQuery( "USE dfs.tmp" );
     assertTrue( util.next() );
     assertTrue( "Error setting schema for test: " + util.getString( 2 ),
                 util.getBoolean( 1 ) );
@@ -256,7 +256,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
         + "\n  CAST( NULL    AS VARCHAR            ) AS mdrOptVARCHAR,        "
         + "\n  CAST( '55'    AS CHAR(5)            ) AS mdrReqCHAR_5,         "
         + "\n  CAST( NULL    AS VARBINARY(16)      ) AS mdrOptVARBINARY_16,   "
-        + "\n  CAST( NULL    AS VARBINARY(1048576) ) AS mdrOptBINARY_1048576, "
+        + "\n  CAST( NULL    AS VARBINARY(65536)   ) AS mdrOptBINARY_65536,   "
         + "\n  CAST( NULL    AS BINARY(8)          ) AS mdrOptBINARY_8,       "
         + "\n  "
         + "\n                   DATE '2015-01-01'    AS mdrReqDATE,           "
@@ -287,48 +287,48 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
     // Set up result rows for temporary test view and Hivetest columns:
 
-    mdrOptBOOLEAN        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBOOLEAN" );
+    mdrOptBOOLEAN        = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptBOOLEAN" );
 
     // TODO(DRILL-2470): Uncomment when TINYINT is implemented:
     //mdrReqTINYINT        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqTINYINT" );
     // TODO(DRILL-2470): Uncomment when SMALLINT is implemented:
     //mdrOptSMALLINT       = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptSMALLINT" );
-    mdrReqINTEGER        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTEGER" );
-    mdrOptBIGINT         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBIGINT" );
+    mdrReqINTEGER        = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTEGER" );
+    mdrOptBIGINT         = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptBIGINT" );
 
     // TODO(DRILL-2683): Uncomment when REAL is implemented:
     //mdrOptREAL           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptREAL" );
-    mdrOptFLOAT          = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptFLOAT" );
-    mdrReqDOUBLE         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDOUBLE" );
+    mdrOptFLOAT          = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptFLOAT" );
+    mdrReqDOUBLE         = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqDOUBLE" );
 
-    mdrReqDECIMAL_5_3    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDECIMAL_5_3" );
+    mdrReqDECIMAL_5_3    = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqDECIMAL_5_3" );
 
-    mdrReqVARCHAR_10     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqVARCHAR_10" );
-    mdrOptVARCHAR        = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptVARCHAR" );
-    mdrReqCHAR_5         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqCHAR_5" );
-    mdrOptVARBINARY_16   = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptVARBINARY_16" );
-    mdrOptBINARY_1048576 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptBINARY_1048576" );
+    mdrReqVARCHAR_10     = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqVARCHAR_10" );
+    mdrOptVARCHAR        = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptVARCHAR" );
+    mdrReqCHAR_5         = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqCHAR_5" );
+    mdrOptVARBINARY_16   = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptVARBINARY_16" );
+    mdrOptBINARY_65536   = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptBINARY_65536" );
 
-    mdrReqDATE           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqDATE" );
-    mdrReqTIME           = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqTIME" );
-    mdrOptTIME_7         = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptTIME_7" );
-    mdrOptTIMESTAMP      = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrOptTIMESTAMP" );
+    mdrReqDATE           = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqDATE" );
+    mdrReqTIME           = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqTIME" );
+    mdrOptTIME_7         = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptTIME_7" );
+    mdrOptTIMESTAMP      = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrOptTIMESTAMP" );
 
-    mdrReqINTERVAL_Y     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Y" );
-    mdrReqINTERVAL_3Y_Mo = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3Y_Mo" );
-    mdrReqINTERVAL_Mo    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mo" );
-    mdrReqINTERVAL_D     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_D" );
-    mdrReqINTERVAL_4D_H  = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_4D_H" );
-    mdrReqINTERVAL_3D_Mi = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3D_Mi" );
-    mdrReqINTERVAL_2D_S5 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_2D_S5" );
-    mdrReqINTERVAL_H     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_H" );
-    mdrReqINTERVAL_1H_Mi = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_1H_Mi" );
-    mdrReqINTERVAL_3H_S1 = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3H_S1" );
-    mdrReqINTERVAL_Mi    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mi" );
-    mdrReqINTERVAL_5Mi_S = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_5Mi_S" );
-    mdrReqINTERVAL_S     = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_S" );
-    mdrReqINTERVAL_3S    = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S" );
-    mdrReqINTERVAL_3S1   = setUpRow( VIEW_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S1" );
+    mdrReqINTERVAL_Y     = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Y" );
+    mdrReqINTERVAL_3Y_Mo = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3Y_Mo" );
+    mdrReqINTERVAL_Mo    = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mo" );
+    mdrReqINTERVAL_D     = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_D" );
+    mdrReqINTERVAL_4D_H  = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_4D_H" );
+    mdrReqINTERVAL_3D_Mi = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3D_Mi" );
+    mdrReqINTERVAL_2D_S5 = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_2D_S5" );
+    mdrReqINTERVAL_H     = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_H" );
+    mdrReqINTERVAL_1H_Mi = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_1H_Mi" );
+    mdrReqINTERVAL_3H_S1 = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3H_S1" );
+    mdrReqINTERVAL_Mi    = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_Mi" );
+    mdrReqINTERVAL_5Mi_S = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_5Mi_S" );
+    mdrReqINTERVAL_S     = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_S" );
+    mdrReqINTERVAL_3S    = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S" );
+    mdrReqINTERVAL_3S1   = setUpRow( DFS_TMP_SCHEMA, VIEW_NAME, "mdrReqINTERVAL_3S1" );
 
     /* TODO(DRILL-3253)(start): Update this once we have test plugin supporting all needed types.
     mdrReqARRAY   = setUpRow( "hive_test.default", "infoschematest", "listtype" );
@@ -361,7 +361,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   private Integer getIntOrNull( ResultSet row, String columnName ) throws SQLException {
     final int value = row.getInt( columnName );
-    return row.wasNull() ? null : new Integer( value );
+    return row.wasNull() ? null : Integer.valueOf( value );
   }
 
 
@@ -439,7 +439,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_TABLE_SCHEM_hasRightValue_mdrOptBOOLEAN() throws SQLException {
-    assertThat( mdrOptBOOLEAN.getString( "TABLE_SCHEM" ), equalTo( VIEW_SCHEMA ) );
+    assertThat( mdrOptBOOLEAN.getString( "TABLE_SCHEM" ), equalTo( DFS_TMP_SCHEMA ) );
   }
 
   // Not bothering with other _local_view_ test columns for TABLE_SCHEM.
@@ -671,7 +671,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_DATA_TYPE_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( getIntOrNull( mdrOptBINARY_1048576, "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
+    assertThat( getIntOrNull(mdrOptBINARY_65536, "DATA_TYPE" ), equalTo( Types.VARBINARY ) );
   }
 
   @Test
@@ -849,7 +849,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_TYPE_NAME_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( mdrOptBINARY_1048576.getString( "TYPE_NAME" ),
+    assertThat( mdrOptBINARY_65536.getString( "TYPE_NAME" ),
                 equalTo( "BINARY VARYING" ) );
   }
 
@@ -1024,7 +1024,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_COLUMN_SIZE_hasRightValue_mdrOptVARCHAR() throws SQLException {
-    assertThat(getIntOrNull(mdrOptVARCHAR, "COLUMN_SIZE"), equalTo(65536));
+    assertThat(getIntOrNull(mdrOptVARCHAR, "COLUMN_SIZE"), equalTo(org.apache.drill.common.types.Types.MAX_VARCHAR_LENGTH));
   }
 
   @Test
@@ -1039,7 +1039,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_COLUMN_SIZE_hasRightValue_mdrOptBINARY_1048576() throws SQLException {
-    assertThat( getIntOrNull( mdrOptBINARY_1048576, "COLUMN_SIZE" ), equalTo( 1048576 ) );
+    assertThat( getIntOrNull(mdrOptBINARY_65536, "COLUMN_SIZE" ), equalTo( 65536 ) );
   }
 
   @Test
@@ -1109,13 +1109,16 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
                 equalTo( 12 ) );  // "P123DT12H12M"
   }
 
-  @Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
+  //Fixed with Calcite update
+  //@Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
   @Test
   public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_2D_S5() throws SQLException {
     assertThat( getIntOrNull( mdrReqINTERVAL_2D_S5, "COLUMN_SIZE" ),
                 equalTo( 20 ) );  // "P12DT12H12M12.12345S"
   }
 
+  @Ignore( "Ignored after Calcite update" )
+  @Test
   public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_2D_S5() throws SQLException {
     assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
                 getIntOrNull( mdrReqINTERVAL_2D_S5, "COLUMN_SIZE" ),
@@ -1134,13 +1137,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
                 equalTo( 7 ) );  // "PT1H12M"
   }
 
-  @Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
+  //Fixed with Calcite update
+  //@Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
   @Test
   public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
     assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "COLUMN_SIZE" ),
                 equalTo( 14 ) );  // "PT123H12M12.1S"
   }
 
+  @Ignore( "Ignored after Calcite update" )
   @Test
   public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_3H_S1() throws SQLException {
     assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
@@ -1172,13 +1177,15 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
                 equalTo( 13 ) );  // "PT123.123456S"
   }
 
-  @Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
+  //Fixed with Calcite update
+  //@Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
   @Test
   public void test_COLUMN_SIZE_hasRightValue_mdrReqINTERVAL_3S1() throws SQLException {
     assertThat( getIntOrNull( mdrReqINTERVAL_3S1, "COLUMN_SIZE" ),
                 equalTo( 8 ) );  // "PT123.1S"
   }
 
+  @Ignore( "Ignored after Calcite update" )
   @Test
   public void test_COLUMN_SIZE_hasINTERIMValue_mdrReqINTERVAL_3S1() throws SQLException {
     assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
@@ -1342,7 +1349,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_DECIMAL_DIGITS_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( getIntOrNull( mdrOptBINARY_1048576, "DECIMAL_DIGITS" ), nullValue() );
+    assertThat( getIntOrNull(mdrOptBINARY_65536, "DECIMAL_DIGITS" ), nullValue() );
   }
 
   @Test
@@ -1420,12 +1427,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     assertThat( getIntOrNull( mdrReqINTERVAL_3D_Mi, "DECIMAL_DIGITS" ), equalTo( 6 ) );
   }
 
-  @Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
+  //Fixed with Calcite update
+  //@Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
   @Test
   public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_2D_S5() throws SQLException {
     assertThat( getIntOrNull( mdrReqINTERVAL_2D_S5, "DECIMAL_DIGITS" ), equalTo( 5 ) );
   }
 
+  @Ignore( "Ignored after Calcite update" )
   @Test
   public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_2D_S5() throws SQLException {
     assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
@@ -1450,12 +1459,14 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
     assertThat( getIntOrNull( mdrReqINTERVAL_1H_Mi, "DECIMAL_DIGITS" ), equalTo( 6 ) );
   }
 
-  @Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
+  //Fixed with Calcite update
+  //@Ignore( "TODO(DRILL-3244): unignore when fractional secs. prec. is right" )
   @Test
   public void test_DECIMAL_DIGITS_hasRightValue_mdrReqINTERVAL_3H_S1() throws SQLException {
     assertThat( getIntOrNull( mdrReqINTERVAL_3H_S1, "DECIMAL_DIGITS" ), equalTo( 1 ) );
   }
 
+  @Ignore( "Ignored after Calcite update" )
   @Test
   public void test_DECIMAL_DIGITS_hasINTERIMValue_mdrReqINTERVAL_3H_S1() throws SQLException {
     assertThat( "When DRILL-3244 fixed, un-ignore above method and purge this.",
@@ -1640,7 +1651,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_NUM_PREC_RADIX_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( getIntOrNull( mdrOptBINARY_1048576, "NUM_PREC_RADIX" ), nullValue() );
+    assertThat( getIntOrNull(mdrOptBINARY_65536, "NUM_PREC_RADIX" ), nullValue() );
   }
 
   @Test
@@ -1824,7 +1835,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_NULLABLE_hasRightValue_mdrOptBINARY_1048576() throws SQLException {
     assertThat( "ResultSetMetaData.column...Null... nullability code:",
-                getIntOrNull( mdrOptBINARY_1048576, "NULLABLE" ), equalTo( columnNullable ) );
+                getIntOrNull(mdrOptBINARY_65536, "NULLABLE" ), equalTo( columnNullable ) );
   }
 
   @Test
@@ -2168,7 +2179,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
   @Test
   public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptVARCHAR() throws SQLException {
     assertThat( getIntOrNull( mdrOptVARCHAR, "CHAR_OCTET_LENGTH" ),
-        equalTo(65536 /* chars. (default of 65536) */
+        equalTo(org.apache.drill.common.types.Types.MAX_VARCHAR_LENGTH /* chars. (default of 65535) */
                          * 4  /* max. UTF-8 bytes per char. */ ) );
   }
 
@@ -2186,7 +2197,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_CHAR_OCTET_LENGTH_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( getIntOrNull( mdrOptBINARY_1048576, "CHAR_OCTET_LENGTH" ), nullValue() );
+    assertThat( getIntOrNull(mdrOptBINARY_65536, "CHAR_OCTET_LENGTH" ), nullValue() );
   }
 
   @Test
@@ -2443,7 +2454,7 @@ public class DatabaseMetaDataGetColumnsTest extends JdbcTestBase {
 
   @Test
   public void test_IS_NULLABLE_hasRightValue_mdrOptBINARY_1048576CHECK() throws SQLException {
-    assertThat( mdrOptBINARY_1048576.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
+    assertThat( mdrOptBINARY_65536.getString( "IS_NULLABLE" ), equalTo( "YES" ) );
   }
 
   @Test

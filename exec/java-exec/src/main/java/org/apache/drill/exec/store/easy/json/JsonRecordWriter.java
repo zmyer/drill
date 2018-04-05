@@ -65,7 +65,7 @@ public class JsonRecordWriter extends JSONOutputRecordWriter implements RecordWr
   private boolean fRecordStarted = false; // true once the startRecord() is called until endRecord() is called
 
   public JsonRecordWriter(StorageStrategy storageStrategy){
-    this.storageStrategy = storageStrategy == null ? StorageStrategy.PERSISTENT : storageStrategy;
+    this.storageStrategy = storageStrategy == null ? StorageStrategy.DEFAULT : storageStrategy;
   }
 
   @Override
@@ -95,7 +95,9 @@ public class JsonRecordWriter extends JSONOutputRecordWriter implements RecordWr
       stream = fs.create(fileName);
       storageStrategy.applyToFile(fs, fileName);
 
-      JsonGenerator generator = factory.createGenerator(stream).useDefaultPrettyPrinter();
+      JsonGenerator generator = factory.createGenerator(stream).useDefaultPrettyPrinter()
+          .configure(JsonGenerator.Feature.QUOTE_NON_NUMERIC_NUMBERS,
+              !Boolean.parseBoolean(writerOptions.get("enableNanInf")));
       if (uglify) {
         generator = generator.setPrettyPrinter(new MinimalPrettyPrinter(LINE_FEED));
       }

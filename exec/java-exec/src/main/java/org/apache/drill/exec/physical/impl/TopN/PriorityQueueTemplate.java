@@ -26,7 +26,6 @@ import javax.inject.Named;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.exec.exception.SchemaChangeException;
 import org.apache.drill.exec.memory.BufferAllocator;
-import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.impl.sort.RecordBatchData;
 import org.apache.drill.exec.record.BatchSchema;
 import org.apache.drill.exec.record.ExpandableHyperContainer;
@@ -44,7 +43,6 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
   private SelectionVector4 heapSv4; //This holds the heap
   private SelectionVector4 finalSv4; //This is for final sorted output
   private ExpandableHyperContainer hyperBatch;
-  private FragmentContext context;
   private BufferAllocator allocator;
   private int limit;
   private int queueSize = 0;
@@ -52,9 +50,8 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
   private boolean hasSv2;
 
   @Override
-  public void init(int limit, FragmentContext context, BufferAllocator allocator,  boolean hasSv2) throws SchemaChangeException {
+  public void init(int limit, BufferAllocator allocator,  boolean hasSv2) throws SchemaChangeException {
     this.limit = limit;
-    this.context = context;
     this.allocator = allocator;
     @SuppressWarnings("resource")
     final DrillBuf drillBuf = allocator.buffer(4 * (limit + 1));
@@ -63,15 +60,12 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
   }
 
   @Override
-  public boolean validate() { return true; }
-
-  @Override
   public void resetQueue(VectorContainer container, SelectionVector4 v4) throws SchemaChangeException {
     assert container.getSchema().getSelectionVectorMode() == BatchSchema.SelectionVectorMode.FOUR_BYTE;
     BatchSchema schema = container.getSchema();
     VectorContainer newContainer = new VectorContainer();
     for (MaterializedField field : schema) {
-      int[] ids = container.getValueVectorId(SchemaPath.getSimplePath(field.getPath())).getFieldIds();
+      int[] ids = container.getValueVectorId(SchemaPath.getSimplePath(field.getName())).getFieldIds();
       newContainer.add(container.getValueAccessorById(field.getValueClass(), ids).getValueVectors());
     }
     newContainer.buildSchema(BatchSchema.SelectionVectorMode.FOUR_BYTE);
@@ -89,12 +83,12 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
       ++queueSize;
     }
     v4.clear();
-    doSetup(context, hyperBatch, null);
+    doSetup(hyperBatch, null);
   }
 
   @SuppressWarnings("resource")
   @Override
-  public void add(FragmentContext context, RecordBatchData batch) throws SchemaChangeException{
+  public void add(RecordBatchData batch) throws SchemaChangeException{
     Stopwatch watch = Stopwatch.createStarted();
     if (hyperBatch == null) {
       hyperBatch = new ExpandableHyperContainer(batch.getContainer());
@@ -102,7 +96,7 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
       hyperBatch.addBatch(batch.getContainer());
     }
 
-    doSetup(context, hyperBatch, null); // may not need to do this every time
+    doSetup(hyperBatch, null); // may not need to do this every time
 
     int count = 0;
     SelectionVector2 sv2 = null;
@@ -146,7 +140,7 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
   }
 
   @Override
-  public SelectionVector4 getHeapSv4() {
+  public SelectionVector4 getSv4() {
     return heapSv4;
   }
 
@@ -226,8 +220,7 @@ public abstract class PriorityQueueTemplate implements PriorityQueue {
     return doEval(sv1, sv2);
   }
 
-  public abstract void doSetup(@Named("context") FragmentContext context,
-                               @Named("incoming") VectorContainer incoming,
+  public abstract void doSetup(@Named("incoming") VectorContainer incoming,
                                @Named("outgoing") RecordBatch outgoing)
                        throws SchemaChangeException;
   public abstract int doEval(@Named("leftIndex") int leftIndex,

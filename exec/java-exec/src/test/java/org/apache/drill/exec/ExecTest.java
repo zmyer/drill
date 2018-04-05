@@ -19,8 +19,8 @@ package org.apache.drill.exec;
 
 import com.codahale.metrics.MetricRegistry;
 import com.google.common.io.Files;
-import mockit.NonStrictExpectations;
-import org.apache.commons.io.FileUtils;
+import mockit.Mock;
+import mockit.MockUp;
 import org.antlr.runtime.ANTLRStringStream;
 import org.antlr.runtime.CommonTokenStream;
 import org.antlr.runtime.RecognitionException;
@@ -38,14 +38,28 @@ import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.server.options.SystemOptionManager;
 import org.apache.drill.exec.store.sys.store.provider.LocalPersistentStoreProvider;
 import org.apache.drill.exec.util.GuavaPatcher;
+import org.apache.drill.test.BaseDirTestWatcher;
 import org.apache.drill.test.DrillTest;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.joda.time.DateTimeUtils;
+import org.joda.time.DateTimeZone;
 import org.junit.After;
 import org.junit.BeforeClass;
+import org.junit.ClassRule;
 
 import java.io.File;
+import java.io.IOException;
+import java.text.DateFormatSymbols;
+import java.util.Locale;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class ExecTest extends DrillTest {
+
+  @ClassRule
+  public static final BaseDirTestWatcher dirTestWatcher = new BaseDirTestWatcher();
 
   protected static SystemOptionManager optionManager;
   static {
@@ -65,8 +79,19 @@ public class ExecTest extends DrillTest {
   public static void setupOptionManager() throws Exception{
     final LocalPersistentStoreProvider provider = new LocalPersistentStoreProvider(c);
     provider.start();
-    optionManager = new SystemOptionManager(PhysicalPlanReaderTestFactory.defaultLogicalPlanPersistence(c), provider);
+    optionManager = new SystemOptionManager(PhysicalPlanReaderTestFactory.defaultLogicalPlanPersistence(c), provider,c);
     optionManager.init();
+  }
+
+  /**
+   * Creates instance of local file system.
+   *
+   * @return local file system
+   */
+  public static FileSystem getLocalFileSystem() throws IOException {
+    Configuration configuration = new Configuration();
+    configuration.set(FileSystem.FS_DEFAULT_NAME_KEY, FileSystem.DEFAULT_FS);
+    return FileSystem.get(configuration);
   }
 
   /**
@@ -77,24 +102,20 @@ public class ExecTest extends DrillTest {
    */
   public static String getTempDir(final String dirName) {
     final File dir = Files.createTempDir();
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override
-      public void run() {
-        FileUtils.deleteQuietly(dir);
-      }
-    });
     return dir.getAbsolutePath() + File.separator + dirName;
   }
 
-  protected void mockDrillbitContext(final DrillbitContext bitContext) throws Exception {
-    new NonStrictExpectations() {{
-      bitContext.getMetrics(); result = new MetricRegistry();
-      bitContext.getAllocator(); result = RootAllocatorFactory.newRoot(c);
-      bitContext.getOperatorCreatorRegistry(); result = new OperatorCreatorRegistry(ClassPathScanner.fromPrescan(c));
-      bitContext.getConfig(); result = c;
-      bitContext.getOptionManager(); result = optionManager;
-      bitContext.getCompiler(); result = CodeCompilerTestFactory.getTestCompiler(c);
-    }};
+  protected DrillbitContext mockDrillbitContext() throws Exception {
+    final DrillbitContext context = mock(DrillbitContext.class);
+
+    when(context.getMetrics()).thenReturn(new MetricRegistry());
+    when(context.getAllocator()).thenReturn(RootAllocatorFactory.newRoot(c));
+    when(context.getOperatorCreatorRegistry()).thenReturn(new OperatorCreatorRegistry(ClassPathScanner.fromPrescan(c)));
+    when(context.getConfig()).thenReturn(c);
+    when(context.getOptionManager()).thenReturn(optionManager);
+    when(context.getCompiler()).thenReturn(CodeCompilerTestFactory.getTestCompiler(c));
+
+    return context;
   }
 
   protected LogicalExpression parseExpr(String expr) throws RecognitionException {
@@ -105,4 +126,29 @@ public class ExecTest extends DrillTest {
     return ret.e;
   }
 
+  /**
+   * This utility is to mock the method DateTimeUtils.getDateFormatSymbols()
+   * to mock the current local as US.
+   */
+  public static void mockUsDateFormatSymbols() {
+    new MockUp<DateTimeUtils>() {
+      @Mock
+      public DateFormatSymbols getDateFormatSymbols(Locale locale) {
+        return new DateFormatSymbols(Locale.US);
+      }
+    };
+  }
+
+  /**
+   * This utility is to mock the method DateTimeZone.getDefault() to
+   * mock current timezone as UTC.
+   */
+  public static void mockUtcDateTimeZone() {
+    new MockUp<DateTimeZone>() {
+      @Mock
+      public DateTimeZone getDefault() {
+        return DateTimeZone.UTC;
+      }
+    };
+  }
 }

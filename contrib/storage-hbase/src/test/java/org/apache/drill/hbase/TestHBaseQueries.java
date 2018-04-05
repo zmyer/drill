@@ -20,6 +20,9 @@ package org.apache.drill.hbase;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.drill.PlanTestBase;
+import org.apache.drill.categories.HbaseStorageTest;
+import org.apache.drill.categories.SlowTest;
 import org.apache.drill.exec.rpc.user.QueryDataBatch;
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HTableDescriptor;
@@ -29,7 +32,9 @@ import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Table;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
+@Category({SlowTest.class, HbaseStorageTest.class})
 public class TestHBaseQueries extends BaseHBaseTest {
 
   @Test
@@ -98,4 +103,16 @@ public class TestHBaseQueries extends BaseHBaseTest {
     }
   }
 
+  @Test
+  public void testSelectFromSchema() throws Exception {
+    setColumnWidths(new int[] {8, 15});
+    test("USE hbase");
+    runHBaseSQLVerifyCount("SELECT row_key\n"
+        + " FROM hbase.TestTableNullStr t WHERE row_key='a1'", 1);
+  }
+
+  @Test
+  public void testPhysicalPlanSubmission() throws Exception {
+    PlanTestBase.testPhysicalPlanExecutionBasedOnQuery("select * from hbase.TestTableNullStr");
+  }
 }

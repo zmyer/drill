@@ -37,6 +37,7 @@ import org.apache.drill.common.expression.NullExpression;
 import org.apache.drill.common.expression.PathSegment;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.expression.TypedNullConstant;
+import org.apache.drill.common.expression.ValueExpressions;
 import org.apache.drill.common.expression.ValueExpressions.BooleanExpression;
 import org.apache.drill.common.expression.ValueExpressions.DateExpression;
 import org.apache.drill.common.expression.ValueExpressions.Decimal18Expression;
@@ -62,7 +63,6 @@ import org.apache.drill.exec.compile.sig.MappingSet;
 import org.apache.drill.exec.expr.ClassGenerator.BlockType;
 import org.apache.drill.exec.expr.ClassGenerator.HoldingContainer;
 import org.apache.drill.exec.expr.fn.AbstractFuncHolder;
-import org.apache.drill.exec.expr.fn.FunctionImplementationRegistry;
 import org.apache.drill.exec.physical.impl.filter.ReturnValueExpression;
 import org.apache.drill.exec.vector.ValueHolderHelper;
 import org.apache.drill.exec.vector.complex.reader.FieldReader;
@@ -85,12 +85,7 @@ import com.sun.codemodel.JVar;
 public class EvaluationVisitor {
   static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(EvaluationVisitor.class);
 
-
-  private final FunctionImplementationRegistry registry;
-
-  public EvaluationVisitor(FunctionImplementationRegistry registry) {
-    super();
-    this.registry = registry;
+  public EvaluationVisitor() {
   }
 
   public HoldingContainer addExpr(LogicalExpression e, ClassGenerator<?> generator) {
@@ -202,7 +197,7 @@ public class EvaluationVisitor {
         generator.getMappingSet().exitChild();
       }
 
-      return holder.renderEnd(generator, args, workspaceVars);
+      return holder.renderEnd(generator, args, workspaceVars, holderExpr.getFieldReference());
     }
 
     @Override
@@ -356,6 +351,28 @@ public class EvaluationVisitor {
 
     }
 
+    /**
+     * <p>
+     * Creates local variable based on given parameter type and name and assigns parameter to this local instance.
+     * </p>
+     *
+     * <p>
+     * Example: <br/>
+     * IntHolder seedValue0 = new IntHolder();<br/>
+     * seedValue0 .value = seedValue;
+     * </p>
+     *
+     * @param e parameter expression
+     * @param generator class generator
+     * @return holder instance
+     */
+    @Override
+    public HoldingContainer visitParameter(ValueExpressions.ParameterExpression e, ClassGenerator<?> generator) {
+      HoldingContainer out = generator.declare(e.getMajorType(), e.getName(), true);
+      generator.getEvalBlock().assign(out.getValue(), JExpr.ref(e.getName()));
+      return out;
+    }
+
     private HoldingContainer visitValueVectorWriteExpression(ValueVectorWriteExpression e, ClassGenerator<?> generator) {
 
       final LogicalExpression child = e.getChild();
@@ -497,7 +514,6 @@ public class EvaluationVisitor {
         }
 
         if (complex || repeated) {
-          MajorType finalType = e.getFieldId().getFinalType();
           // //
           JVar complexReader = generator.declareClassField("reader", generator.getModel()._ref(FieldReader.class));
 
@@ -572,7 +588,7 @@ public class EvaluationVisitor {
     @Override
     public HoldingContainer visitQuotedStringConstant(QuotedString e, ClassGenerator<?> generator)
         throws RuntimeException {
-      MajorType majorType = Types.required(MinorType.VARCHAR);
+      MajorType majorType = e.getMajorType();
       JBlock setup = generator.getBlock(BlockType.SETUP);
       JType holderType = generator.getHolderType(majorType);
       JVar var = generator.declareClassField("string", holderType);

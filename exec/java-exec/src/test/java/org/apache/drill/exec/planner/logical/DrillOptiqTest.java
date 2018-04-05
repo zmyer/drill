@@ -27,13 +27,17 @@ import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.drill.categories.PlannerTest;
 import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.exec.planner.types.DrillRelDataTypeSystem;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
+
 import java.util.LinkedList;
 import java.util.List;
 
+@Category(PlannerTest.class)
 public class DrillOptiqTest {
 
   /* Method checks if we raise the appropriate error while dealing with RexNode that cannot be converted to
@@ -52,7 +56,7 @@ public class DrillOptiqTest {
 
       // create a dummy RexOver object.
       RexNode window = rex.makeOver(anyType, SqlStdOperatorTable.AVG, emptyList, emptyList, e, null, null, true,
-          false, false);
+          false, false, false);
       DrillOptiq.toDrill(null, (RelNode) null, window);
     } catch (UserException e) {
       if (e.getMessage().contains(DrillOptiq.UNSUPPORTED_REX_NODE_ERROR)) {

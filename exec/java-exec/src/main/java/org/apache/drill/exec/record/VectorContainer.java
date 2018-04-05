@@ -18,9 +18,6 @@
 package org.apache.drill.exec.record;
 
 import java.lang.reflect.Array;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -41,15 +38,15 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
 public class VectorContainer implements VectorAccessible {
-  //private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(VectorContainer.class);
 
+  private final BufferAllocator allocator;
   protected final List<VectorWrapper<?>> wrappers = Lists.newArrayList();
   private BatchSchema schema;
   private int recordCount = -1;
-  private BufferAllocator allocator;
   private boolean schemaChanged = true; // Schema has changed since last built. Must rebuild schema
 
   public VectorContainer() {
+    allocator = null;
   }
 
   public VectorContainer(OperatorContext oContext) {
@@ -58,6 +55,28 @@ public class VectorContainer implements VectorAccessible {
 
   public VectorContainer(BufferAllocator allocator) {
     this.allocator = allocator;
+  }
+
+  /**
+   * Create a new vector container given a pre-defined schema. Creates the
+   * corresponding vectors, but does not allocate memory for them. Call
+   * {@link #allocateNew()} or {@link #allocateNewSafe()} to allocate
+   * memory.
+   * <p>
+   * Note that this method does the equivalent of {@link #buildSchema(SelectionVectorMode)}
+   * using the schema provided.
+   *
+   * @param allocator allocator to be used to allocate memory later
+   * @param schema the schema that defines the vectors to create
+   */
+
+  public VectorContainer(BufferAllocator allocator, BatchSchema schema) {
+    this.allocator = allocator;
+    for (MaterializedField field : schema) {
+      addOrGet(field, null);
+    }
+    this.schema = schema;
+    schemaChanged = false;
   }
 
   @Override
@@ -113,9 +132,9 @@ public class VectorContainer implements VectorAccessible {
     return addOrGet(field, null);
   }
 
-  @SuppressWarnings({ "resource", "unchecked" })
+  @SuppressWarnings("unchecked")
   public <T extends ValueVector> T addOrGet(final MaterializedField field, final SchemaChangeCallBack callBack) {
-    final TypedFieldId id = getValueVectorId(SchemaPath.getSimplePath(field.getPath()));
+    final TypedFieldId id = getValueVectorId(SchemaPath.getSimplePath(field.getName()));
     final ValueVector vector;
     final Class<?> clazz = TypeHelper.getValueVectorClass(field.getType().getMinorType(), field.getType().getMode());
     if (id != null) {
@@ -126,7 +145,6 @@ public class VectorContainer implements VectorAccessible {
         return (T) newVector;
       }
     } else {
-
       vector = TypeHelper.getNewVector(field, this.getAllocator(), callBack);
       add(vector);
     }
@@ -181,31 +199,6 @@ public class VectorContainer implements VectorAccessible {
     return vc;
   }
 
-  /**
-   * Sorts vectors into canonical order (by field name) in new VectorContainer.
-   */
-  public static VectorContainer canonicalize(VectorContainer original) {
-    VectorContainer vc = new VectorContainer();
-    List<VectorWrapper<?>> canonicalWrappers = new ArrayList<VectorWrapper<?>>(original.wrappers);
-    // Sort list of VectorWrapper alphabetically based on SchemaPath.
-    Collections.sort(canonicalWrappers, new Comparator<VectorWrapper<?>>() {
-      @Override
-      public int compare(VectorWrapper<?> v1, VectorWrapper<?> v2) {
-        return v1.getField().getPath().compareTo(v2.getField().getPath());
-      }
-    });
-
-    for (VectorWrapper<?> w : canonicalWrappers) {
-      if (w.isHyper()) {
-        vc.add(w.getValueVectors());
-      } else {
-        vc.add(w.getValueVector());
-      }
-    }
-    vc.allocator = original.allocator;
-    return vc;
-  }
-
   private void cloneAndTransfer(VectorWrapper<?> wrapper) {
     wrappers.add(wrapper.cloneAndTransfer(getAllocator()));
   }
@@ -235,9 +228,7 @@ public class VectorContainer implements VectorAccessible {
     schema = null;
     Class<?> clazz = hyperVector[0].getClass();
     ValueVector[] c = (ValueVector[]) Array.newInstance(clazz, hyperVector.length);
-    for (int i = 0; i < hyperVector.length; i++) {
-      c[i] = hyperVector[i];
-    }
+    System.arraycopy(hyperVector, 0, c, 0, hyperVector.length);
     // todo: work with a merged schema.
     wrappers.add(HyperVectorWrapper.create(hyperVector[0].getField(), c, releasable));
   }
@@ -263,7 +254,7 @@ public class VectorContainer implements VectorAccessible {
     for (VectorWrapper<?> w : wrappers){
       if (!w.isHyper() && old == w.getValueVector()) {
         w.clear();
-        wrappers.set(i, new SimpleVectorWrapper<ValueVector>(newVector));
+        wrappers.set(i, new SimpleVectorWrapper<>(newVector));
         return;
       }
       i++;
@@ -304,7 +295,6 @@ public class VectorContainer implements VectorAccessible {
     }
 
     return va.getChildWrapper(fieldIds);
-
   }
 
   private VectorWrapper<?> getValueAccessorById(int... fieldIds) {
@@ -344,9 +334,13 @@ public class VectorContainer implements VectorAccessible {
   }
 
   public void clear() {
-    schema = null;
     zeroVectors();
+    removeAll();
+  }
+
+  public void removeAll() {
     wrappers.clear();
+    schema = null;
   }
 
   public void setRecordCount(int recordCount) {
@@ -373,15 +367,17 @@ public class VectorContainer implements VectorAccessible {
 
   /**
    * Clears the contained vectors.  (See {@link ValueVector#clear}).
+   * Note that the name <tt>zeroVector()</tt> in a value vector is
+   * used for the action to set all vectors to zero. Here it means
+   * to free the vector's memory. Sigh...
    */
+
   public void zeroVectors() {
-    for (VectorWrapper<?> w : wrappers) {
-      w.clear();
-    }
+    VectorAccessibleUtilities.clear(this);
   }
 
   public int getNumberOfColumns() {
-    return this.wrappers.size();
+    return wrappers.size();
   }
 
   public void allocateNew() {
@@ -397,5 +393,58 @@ public class VectorContainer implements VectorAccessible {
       }
     }
     return true;
+  }
+
+  /**
+   * Merge two batches to create a single, combined, batch. Vectors
+   * appear in the order defined by {@link BatchSchema#merge(BatchSchema)}.
+   * The two batches must have identical row counts. The pattern is that
+   * this container is the main part of the record batch, the other
+   * represents new columns to merge.
+   * <p>
+   * Reference counts on the underlying buffers are <b>unchanged</b>.
+   * The client code is assumed to abandon the two input containers in
+   * favor of the merged container.
+   *
+   * @param otherContainer the container to merge with this one
+   * @return a new, merged, container
+   */
+  public VectorContainer merge(VectorContainer otherContainer) {
+    if (recordCount != otherContainer.recordCount) {
+      throw new IllegalArgumentException();
+    }
+    VectorContainer merged = new VectorContainer(allocator);
+    merged.schema = schema.merge(otherContainer.schema);
+    merged.recordCount = recordCount;
+    merged.wrappers.addAll(wrappers);
+    merged.wrappers.addAll(otherContainer.wrappers);
+    merged.schemaChanged = false;
+    return merged;
+  }
+
+  /**
+   * Exchange buffers between two identical vector containers.
+   * The schemas must be identical in both column schemas and
+   * order. That is, after this call, data is exchanged between
+   * the containers. Requires that both containers be owned
+   * by the same allocator.
+   *
+   * @param other the target container with buffers to swap
+   */
+
+  public void exchange(VectorContainer other) {
+    assert schema.isEquivalent(other.schema);
+    assert wrappers.size() == other.wrappers.size();
+    assert allocator != null  &&  allocator == other.allocator;
+    for (int i = 0; i < wrappers.size(); i++) {
+      wrappers.get(i).getValueVector().exchange(
+          other.wrappers.get(i).getValueVector());
+    }
+    int temp = recordCount;
+    recordCount = other.recordCount;
+    other.recordCount = temp;
+    boolean temp2 = schemaChanged;
+    schemaChanged = other.schemaChanged;
+    other.schemaChanged = temp2;
   }
 }
